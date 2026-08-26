@@ -32,6 +32,7 @@ cargo test --lib --examples # run tests (any backend; flex = CPU default)
 cargo test --doc            # the crate header's quick-start example
 cargo doc --no-deps         # build docs — must be warning-free
 cargo run --release --example associative-recall
+cargo bench                 # benches/layer.rs: single-block, three modes
 ```
 
 - **Feature flags select the backend**: `backend-{flex,cpu,wgpu,webgpu,metal,vulkan,
@@ -111,6 +112,7 @@ src/
    └─ tests/         burn-stack containers through real blocks: layers, network,
                      bidi, optim
 scripts/gen_fixture.py   regenerates src/delta/tests/reference.rs from FLA
+benches/layer.rs         single-block benches (forward / train / step)
 ```
 
 `files.md` is the per-file signature reference for **this** crate (what each

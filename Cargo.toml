@@ -75,3 +75,7 @@ temp-dir = "0.1.16"
 ### For the main branch. ###
 burn = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, features = ["autodiff", "train", "dataset", "std", "optim"]}
 burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", features = ["network"] }
+
+[[bench]]
+name = "layer"
+harness = false

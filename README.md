@@ -177,6 +177,21 @@ See [`examples/README.md`](examples/README.md).
 cargo run --release --example associative-recall --features backend-flex
 ```
 
+## Benchmarks
+
+```bash
+cargo bench                      # all cases, default features (flex)
+cargo bench -- forward/gated     # one case
+cargo bench -- --save-baseline flex
+cargo bench -- --baseline flex
+```
+
+`benches/layer.rs` measures a single block — no layer or network wrapper — in
+all three modes (`forward`, `train`, `step`) across the families, both
+`TriSolve` variants, `Recurrent` against `Chunk`, and DeltaProduct's
+`n_householder`. Sizes come from the environment (`BENCH_SEQ`, `BENCH_D_MODEL`,
+…); see the file header.
+
 ## Documentation
 
 ```bash

@@ -215,6 +215,16 @@ separately).
 
 ---
 
+## `benches/layer.rs`
+
+Single-block criterion benches in the three modes (`forward` / `train` /
+`step`), across the families, both `TriSolve` variants, `Recurrent` against
+`Chunk`, and DeltaProduct's `n_householder`. Sizes and criterion's sampling
+come from the environment. Each case builds its block *inside* the closure
+criterion only calls for cases passing its filter, and drains the device once
+per measured batch rather than per iteration (`timed`), so an async backend is
+measured at steady state.
+
 ## `scripts/gen_fixture.py`
 
 Runs `flash-linear-attention`'s naive delta-rule implementations at float64 on a
