@@ -37,7 +37,15 @@ pub mod family;
 pub mod bidi;
 pub mod network;
 
-#[cfg(all(test, feature = "_dev-test"))]
+// The container suite runs every family through one enum, so it needs all
+// three compiled in.
+#[cfg(all(
+    test,
+    feature = "_dev-test",
+    feature = "deltanet",
+    feature = "gated-deltanet",
+    feature = "delta-product"
+))]
 mod tests;
 
 pub use cache::DeltaCaches;
