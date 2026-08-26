@@ -13,13 +13,9 @@
 //!   the delta rule's Householder factor `I − β k kᵀ` non-expansive for
 //!   `β ∈ (0, 2)` — see [`crate::delta`].
 
-/// The fused causal depthwise short convolution (+ its rolling window).
 pub mod conv;
-/// The scalar forget gate (Mamba-2's decay parameterisation).
 pub mod gate;
-/// Query/key activation and normalisation applied before the delta rule.
 pub mod norm;
-/// The fused `[q | k | v | β | gate]` projection front-end.
 pub mod qkv;
 
 /// Public re-exports for the shared primitives.

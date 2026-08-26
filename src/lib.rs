@@ -81,26 +81,16 @@
 #![allow(clippy::module_inception)]
 #![allow(clippy::too_many_arguments)]
 
-/// Shared block-level primitives: the fused causal short convolution and the
-/// query/key normalisations every family applies before the delta rule.
 pub mod common;
-/// The delta-rule core: the recurrence, its chunkwise (WY) reformulation, and
-/// the algorithm selector shared by all three families.
 pub mod delta;
 
-/// DeltaProduct: `n_householder` delta-rule micro-steps per token.
 #[cfg(feature = "delta-product")]
 pub mod delta_product;
-/// DeltaNet: the delta rule with no forget gate.
 #[cfg(feature = "deltanet")]
 pub mod deltanet;
-/// Gated DeltaNet: the delta rule plus a Mamba-2-style scalar decay.
 #[cfg(feature = "gated-deltanet")]
 pub mod gated_deltanet;
 
-/// The runtime-selectable API: enums that pick a family at run time, plus the
-/// `Block`/`BlockConfig`/`CacheStack` impls that plug each one into
-/// [`burn_stack`].
 pub mod unified;
 
 /// Convenience re-exports: `use burn_deltanet::prelude::*;` brings the enabled
@@ -119,7 +109,11 @@ pub mod prelude {
     pub use crate::delta_product::{self, prelude::*};
 
     // The runtime-selectable unified API (this crate).
-    pub use crate::unified::DeltaCaches;
+    pub use crate::unified::{
+        DeltaBidiLayers, DeltaBidiLayersConfig, DeltaBidiShape, DeltaCaches, DeltaFamily,
+        DeltaLatentNet, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape, DeltaVocabNet,
+        DeltaVocabNetConfig, DeltaVocabShape,
+    };
 
     // The block-generic composition layer (`burn-stack`).
     pub use burn_stack::prelude::*;

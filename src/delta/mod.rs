@@ -70,7 +70,8 @@
 //! - [`recurrent`] — the token-by-token recurrence: the definition above, and
 //!   the primitive each family's `step()` decodes with.
 //! - [`chunk`] — the chunkwise WY algorithm.
-//! - [`path`] — [`DeltaInput`] (what a block hands the core) and [`DeltaPath`]
+//! - [`path`] — [`DeltaInput`](path::DeltaInput) (what a block hands the core)
+//!   and [`DeltaPath`](path::DeltaPath)
 //!   (which algorithm runs, at what chunk length).
 //!
 //! ## Notation / dimension keys
@@ -96,13 +97,9 @@
 //! `S` is a padded `s`, `K` a `k−1`, and so on. Paper style (`Q, K, V, S, β`)
 //! may appear in comments but never in code identifiers.
 
-/// The chunkwise WY algorithm.
 pub mod chunk;
-/// [`DeltaInput`] / [`DeltaPath`]: the core's input bundle and algorithm selector.
 pub mod path;
-/// The token-by-token recurrence (the definition, and the decode primitive).
 pub mod recurrent;
-/// Inverting `I − N` for the WY transform.
 pub mod tri;
 
 /// Public re-exports for the delta-rule core.

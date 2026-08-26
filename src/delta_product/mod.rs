@@ -4,12 +4,12 @@
 //! *product* of generalised Householder reflections rather than a single one —
 //! a direct dial on how much group structure the recurrence can track, at no
 //! extra state. See
-//! [`delta_product`](crate::delta_product::delta_product) for why that follows
+//! [`delta_product`] for why that follows
 //! from Cartan–Dieudonné and how it is evaluated without a new kernel.
 //!
-//! - [`delta_product`](crate::delta_product::delta_product) — the block and its
+//! - [`delta_product`] — the block and its
 //!   config.
-//! - [`cache`](crate::delta_product::cache) — the convolution window +
+//! - [`cache`] — the convolution window +
 //!   recurrent state carried between calls.
 //!
 //! The residual layer, the layer stack, the language model and the

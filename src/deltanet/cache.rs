@@ -39,6 +39,17 @@ pub struct DeltaNetCache {
 }
 
 impl DeltaNetCache {
+    /// Rebuild a cache from its two tensors.
+    ///
+    /// Used by the [`CacheStack`](burn_stack::modules::CacheStack) impl, which
+    /// has to convert each field by hand.
+    pub fn from_parts(conv_bwc: Option<Tensor<3>>, state_bhkv: Tensor<4>) -> Self {
+        Self {
+            conv_bwc,
+            state_bhkv,
+        }
+    }
+
     /// Run the [`NaN`/`Inf` guards](burn_stack::modules::misc::sanity) on every
     /// cached tensor.
     pub fn sanity(&self) {
