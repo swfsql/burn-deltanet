@@ -23,5 +23,5 @@ pub mod prelude {
     pub use super::conv::{ConvActivation, ShortConv, ShortConvConfig};
     pub use super::gate::{ForgetGate, ForgetGateConfig};
     pub use super::norm::{OutNorm, QkActivation, QkNorm, l2_normalize, sum_normalize};
-    pub use super::qkv::{Qkv, QkvProjection, QkvProjectionConfig, QkvStep};
+    pub use super::qkv::{Qkv, QkvProjection, QkvProjectionConfig, QkvStep, WriteGate};
 }

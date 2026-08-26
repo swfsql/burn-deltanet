@@ -72,9 +72,21 @@ impl DeltaPath {
 ///
 /// `q`/`k` arrive **already activated and normalised** (see
 /// [`crate::common::norm`]) but **not** scaled: [`Self::scale`] is applied to
-/// `q` inside, so the same bundle reads identically on either path. `β` and `g`
+/// `q` inside, so the same bundle reads identically on either path. The gates
 /// arrive already squashed to their ranges — the core applies no `sigmoid`,
 /// `softplus` or `exp` of its own beyond `exp(g)`.
+///
+/// ## The gate axes `K` and `V`
+///
+/// The three gates are carried at their **broadcast** width: their last axis is
+/// either `1` (one value per head — a scalar `β`, a scalar `α`) or the full
+/// `head_k_dim` / `head_v_dim` (one value per channel — [GDN-2](crate::gdn2)).
+/// The two are the same function: a per-head `β` *is* `erase = β·1_k`,
+/// `write = β·1_v`, and every expression below broadcasts over the axis without
+/// branching. Only the [chunked](super::chunk) path looks at the width, because
+/// a per-head decay factors out of the key contraction and a per-channel one
+/// does not.
+#[allow(non_snake_case)]
 pub struct DeltaInput {
     /// Queries. `[batch, sequence, nheads, head_k_dim]`
     pub q_bshk: Tensor<4>,
@@ -82,16 +94,29 @@ pub struct DeltaInput {
     pub k_bshk: Tensor<4>,
     /// Values. `[batch, sequence, nheads, head_v_dim]`
     pub v_bshv: Tensor<4>,
-    /// Write strength `β ∈ (0, 1)`, or `(0, 2)` with negative eigenvalues
-    /// allowed. `[batch, sequence, nheads]`
-    pub beta_bsh: Tensor<3>,
+    /// Erase gate on the key axis: how much of the association currently held
+    /// at `k` is removed. `β ∈ (0, 1)`, or `(0, 2)` with negative eigenvalues
+    /// allowed. `[batch, sequence, nheads, K]`
+    pub erase_bshK: Tensor<4>,
+    /// Write gate on the value axis: how much of `v` is committed.
+    /// `[batch, sequence, nheads, V]`
+    pub write_bshV: Tensor<4>,
     /// Log forget gate `g = log α ≤ 0`, or `None` for no gate (`α ≡ 1`).
-    /// `[batch, sequence, nheads]`
-    pub g_bsh: Option<Tensor<3>>,
+    /// `[batch, sequence, nheads, K]`
+    pub g_bshK: Option<Tensor<4>>,
     /// Incoming state `S₀`. `[batch, nheads, head_k_dim, head_v_dim]`
     pub state_bhkv: Tensor<4>,
     /// Readout scale on `q`; `None` ⇒ `1/√head_k_dim`.
     pub scale: Option<f64>,
+}
+
+/// The `(erase, write)` pair a per-head `β` stands for: the same number
+/// broadcast over both channel axes.
+///
+/// Shapes: `[batch, .., nheads]` → two of `[batch, .., nheads, 1]`.
+pub fn beta_gates<const D: usize, const DP1: usize>(beta: Tensor<D>) -> (Tensor<DP1>, Tensor<DP1>) {
+    let gate: Tensor<DP1> = beta.unsqueeze_dim(D);
+    (gate.clone(), gate)
 }
 
 impl DeltaInput {
@@ -109,26 +134,46 @@ impl DeltaInput {
             .unwrap_or_else(|| 1.0 / (head_k_dim as f64).sqrt())
     }
 
+    /// Whether the forget gate varies per key channel rather than being one
+    /// number per head — the only place the two gate widths take different
+    /// code paths.
+    pub fn has_channel_decay(&self) -> bool {
+        self.g_bshK.as_ref().is_some_and(|g| g.dims()[3] > 1)
+    }
+
     /// Check every shape agrees, and run the
     /// [`NaN`/`Inf` guards](burn_stack::modules::misc::sanity).
+    #[allow(non_snake_case)]
     pub fn sanity(&self) {
         let (batch, sequence, nheads, head_k_dim, head_v_dim) = self.dims();
         assert!(sequence > 0, "sequence length must be at least 1");
         assert_eq!([batch, sequence, nheads, head_k_dim], self.k_bshk.dims());
         assert_eq!([batch, sequence, nheads, head_v_dim], self.v_bshv.dims());
-        assert_eq!([batch, sequence, nheads], self.beta_bsh.dims());
         assert_eq!(
             [batch, nheads, head_k_dim, head_v_dim],
             self.state_bhkv.dims()
         );
+        // A gate axis is either shared across the head (width 1) or per channel.
+        let gate_axis = |t: &Tensor<4>, full: usize, what: &str| {
+            let dims = t.dims();
+            assert_eq!([batch, sequence, nheads], [dims[0], dims[1], dims[2]], "{what}");
+            assert!(
+                dims[3] == 1 || dims[3] == full,
+                "{what}: last axis must be 1 or {full}, got {}",
+                dims[3],
+            );
+        };
+        gate_axis(&self.erase_bshK, head_k_dim, "erase gate");
+        gate_axis(&self.write_bshV, head_v_dim, "write gate");
         san(&self.q_bshk);
         san(&self.k_bshk);
         san(&self.v_bshv);
-        san(&self.beta_bsh);
+        san(&self.erase_bshK);
+        san(&self.write_bshV);
         san(&self.state_bhkv);
-        if let Some(g_bsh) = &self.g_bsh {
-            assert_eq!([batch, sequence, nheads], g_bsh.dims());
-            san(g_bsh);
+        if let Some(g_bshK) = &self.g_bshK {
+            gate_axis(g_bshK, head_k_dim, "forget gate");
+            san(g_bshK);
         }
     }
 

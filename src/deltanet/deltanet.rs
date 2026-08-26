@@ -49,7 +49,7 @@ use burn::prelude::*;
 use burn_stack::modules::sanity as san;
 
 use crate::common::norm::{OutNorm, QkActivation, QkNorm};
-use crate::common::qkv::{QkvProjection, QkvProjectionConfig};
+use crate::common::qkv::{QkvProjection, QkvProjectionConfig, WriteGate};
 use crate::delta::path::{DeltaInput, DeltaPath};
 use crate::delta::recurrent::delta_step;
 use crate::deltanet::cache::{DeltaNetCache, DeltaNetCacheConfig, DeltaNetCaches, DeltaNetCachesConfig};
@@ -156,8 +156,9 @@ impl DeltaNet {
             q_bshk: qkv.q_bshk,
             k_bshk: qkv.k_bShk,
             v_bshv: qkv.v_bShv,
-            beta_bsh: qkv.beta_bSh,
-            g_bsh: None,
+            erase_bshK: qkv.erase_bShK,
+            write_bshV: qkv.write_bShV,
+            g_bshK: None,
             state_bhkv,
             scale: None,
         }
@@ -208,7 +209,8 @@ impl DeltaNet {
             qkv.q_bhk,
             qkv.k_buhk.squeeze_dim(1),
             qkv.v_buhv.squeeze_dim(1),
-            qkv.beta_buh.squeeze_dim(1),
+            qkv.erase_buhK.squeeze_dim(1),
+            qkv.write_buhV.squeeze_dim(1),
             None,
             state_bhkv,
             1.0 / (self.head_k_dim() as f64).sqrt(),
@@ -343,7 +345,7 @@ impl DeltaNetConfig {
             self.head_k_dim(),
             self.head_v_dim(),
         )
-        .with_has_beta(self.use_beta)
+        .with_write_gate(if self.use_beta { WriteGate::Scalar } else { WriteGate::Fixed })
         .with_has_gate(self.use_gate)
         .with_allow_neg_eigval(self.allow_neg_eigval)
         .with_use_short_conv(self.use_short_conv)

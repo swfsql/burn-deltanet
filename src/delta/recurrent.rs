@@ -16,11 +16,16 @@ use super::path::DeltaInput;
 /// One delta-rule tick, for all heads of a batch at once.
 ///
 /// ```text
-///   S⁻ = α ⊙ S          (α = exp(g); skipped when `g_bh` is `None`)
-///   u  = β (v − S⁻ᵀ k)
+///   S⁻ = α ⊙ S              (α = exp(g), on the key axis; skipped when `None`)
+///   u  = write ⊙ v − S⁻ᵀ (erase ⊙ k)
 ///   S  = S⁻ + k uᵀ
 ///   y  = Sᵀ (scale · q)
 /// ```
+///
+/// With a per-head `β` — `erase = write = β`, both of width 1 — that reads
+/// `u = β (v − S⁻ᵀ k)`, the scalar delta rule verbatim. Widening the gates onto
+/// their channel axes decouples the two halves of the write, which is what
+/// [GDN-2](crate::gdn2) is.
 ///
 /// `q`/`k` are expected already activated and normalised; `scale` is applied
 /// here so the caller does not have to.
@@ -28,47 +33,47 @@ use super::path::DeltaInput;
 /// # Shapes
 /// - `q_bhk`, `k_bhk`: `[batch, nheads, head_k_dim]`
 /// - `v_bhv`: `[batch, nheads, head_v_dim]`
-/// - `beta_bh`, `g_bh`: `[batch, nheads]`
+/// - `erase_bhK`, `g_bhK`: `[batch, nheads, 1 | head_k_dim]`
+/// - `write_bhV`: `[batch, nheads, 1 | head_v_dim]`
 /// - `state_bhkv`: `[batch, nheads, head_k_dim, head_v_dim]`
 /// - returns `(y_bhv, next_state_bhkv)`
+#[allow(non_snake_case)]
 pub fn delta_step(
     q_bhk: Tensor<3>,
     k_bhk: Tensor<3>,
     v_bhv: Tensor<3>,
-    beta_bh: Tensor<2>,
-    g_bh: Option<Tensor<2>>,
+    erase_bhK: Tensor<3>,
+    write_bhV: Tensor<3>,
+    g_bhK: Option<Tensor<3>>,
     state_bhkv: Tensor<4>,
     scale: f64,
 ) -> (Tensor<3>, Tensor<4>) {
     let [batch, nheads, head_k_dim] = q_bhk.dims();
     let [_b, _h, head_v_dim] = v_bhv.dims();
     assert_eq!([batch, nheads, head_k_dim], k_bhk.dims());
-    assert_eq!([batch, nheads], beta_bh.dims());
     assert_eq!([batch, nheads, head_k_dim, head_v_dim], state_bhkv.dims());
 
-    // ── Forget gate: S⁻ = exp(g) · S ─────────────────────────────────────────
-    let state_bhkv = match g_bh {
-        Some(g_bh) => {
-            assert_eq!([batch, nheads], g_bh.dims());
-            let decay_bh11: Tensor<4> = g_bh.exp().unsqueeze_dims(&[-1, -1]);
-            assert_eq!([batch, nheads, 1, 1], decay_bh11.dims());
-            state_bhkv * decay_bh11
+    // ── Forget gate: S⁻ = exp(g) ⊙ S, along the state's key axis ────────────
+    let state_bhkv = match g_bhK {
+        Some(g_bhK) => {
+            // `[batch, nheads, 1 | head_k_dim, 1]`: broadcasts over the values.
+            let decay_bhK1: Tensor<4> = g_bhK.exp().unsqueeze_dim(3);
+            state_bhkv * decay_bhK1
         }
         None => state_bhkv,
     };
 
-    // ── Retrieve: what the state currently associates with k ────────────────
+    // ── Retrieve: what the state currently associates with the erase key ────
     // A `[1, k] @ [k, v]` matmul rather than a broadcast-multiply-and-sum, so
     // the backend sees a GEMM.
-    let retrieved_bhv = k_bhk
-        .clone()
+    let erased_bhv = (k_bhk.clone() * erase_bhK)
         .unsqueeze_dim::<4>(2) // [batch, nheads, 1, head_k_dim]
         .matmul(state_bhkv.clone())
         .squeeze_dim(2);
-    assert_eq!([batch, nheads, head_v_dim], retrieved_bhv.dims());
+    assert_eq!([batch, nheads, head_v_dim], erased_bhv.dims());
 
-    // ── The delta: u = β (v − retrieved) ────────────────────────────────────
-    let u_bhv = (v_bhv - retrieved_bhv) * beta_bh.unsqueeze_dim::<3>(2);
+    // ── The delta: what is to be written, minus what is already there ───────
+    let u_bhv = v_bhv * write_bhV - erased_bhv;
     assert_eq!([batch, nheads, head_v_dim], u_bhv.dims());
 
     // ── Write: the rank-1 correction S ← S⁻ + k uᵀ ──────────────────────────
@@ -98,6 +103,7 @@ impl DeltaInput {
     ///
     /// `O(sequence)` serial ticks — the definition, and the right choice for a
     /// short prefill where the chunk algebra would not pay for itself.
+    #[allow(non_snake_case)]
     pub fn delta_recurrent(self) -> (Tensor<4>, Tensor<4>) {
         let (batch, sequence, nheads, _head_k_dim, head_v_dim) = self.dims();
         let scale = self.resolved_scale();
@@ -105,8 +111,9 @@ impl DeltaInput {
             q_bshk,
             k_bshk,
             v_bshv,
-            beta_bsh,
-            g_bsh,
+            erase_bshK,
+            write_bshV,
+            g_bshK,
             state_bhkv,
             scale: _,
         } = self;
@@ -114,15 +121,17 @@ impl DeltaInput {
         let mut state_bhkv = state_bhkv;
         let mut ys = Vec::with_capacity(sequence);
         for t in 0..sequence {
-            let q_bhk = q_bshk.clone().narrow(1, t, 1).squeeze_dim(1);
-            let k_bhk = k_bshk.clone().narrow(1, t, 1).squeeze_dim(1);
-            let v_bhv = v_bshv.clone().narrow(1, t, 1).squeeze_dim(1);
-            let beta_bh = beta_bsh.clone().narrow(1, t, 1).squeeze_dim(1);
-            let g_bh = g_bsh
-                .as_ref()
-                .map(|g| g.clone().narrow(1, t, 1).squeeze_dim(1));
-
-            let (y_bhv, next) = delta_step(q_bhk, k_bhk, v_bhv, beta_bh, g_bh, state_bhkv, scale);
+            let at = |x_bs: &Tensor<4>| -> Tensor<3> { x_bs.clone().narrow(1, t, 1).squeeze_dim(1) };
+            let (y_bhv, next) = delta_step(
+                at(&q_bshk),
+                at(&k_bshk),
+                at(&v_bshv),
+                at(&erase_bshK),
+                at(&write_bshV),
+                g_bshK.as_ref().map(at),
+                state_bhkv,
+                scale,
+            );
             state_bhkv = next;
             ys.push(y_bhv.unsqueeze_dim(1));
         }

@@ -61,7 +61,7 @@ use burn_stack::modules::sanity as san;
 
 use crate::common::gate::{ForgetGate, ForgetGateConfig};
 use crate::common::norm::{OutNorm, QkActivation, QkNorm};
-use crate::common::qkv::{QkvProjection, QkvProjectionConfig};
+use crate::common::qkv::{QkvProjection, QkvProjectionConfig, WriteGate};
 use crate::delta::path::{DeltaInput, DeltaPath};
 use crate::delta_product::cache::{
     DeltaProductCache, DeltaProductCacheConfig, DeltaProductCaches, DeltaProductCachesConfig,
@@ -210,8 +210,9 @@ impl DeltaProduct {
             q_bshk: q_bShk,
             k_bshk: qkv.k_bShk,
             v_bshv: qkv.v_bShv,
-            beta_bsh: qkv.beta_bSh,
-            g_bsh: g_bSh,
+            erase_bshK: qkv.erase_bShK,
+            write_bshV: qkv.write_bShV,
+            g_bshK: g_bSh.map(|g| g.unsqueeze_dim::<4>(3)),
             state_bhkv,
             scale: None,
         }
@@ -295,8 +296,9 @@ impl DeltaProduct {
             q_bshk: q_buhk,
             k_bshk: qkv.k_buhk,
             v_bshv: qkv.v_buhv,
-            beta_bsh: qkv.beta_buh,
-            g_bsh: g_buh,
+            erase_bshK: qkv.erase_buhK,
+            write_bshV: qkv.write_buhV,
+            g_bshK: g_buh.map(|g| g.unsqueeze_dim::<4>(3)),
             state_bhkv,
             scale: None,
         }
@@ -452,7 +454,7 @@ impl DeltaProductConfig {
         )
         .with_n_value_heads(self.n_value_heads)
         .with_n_householder(self.n_householder)
-        .with_has_beta(true)
+        .with_write_gate(WriteGate::Scalar)
         .with_has_gate(self.use_gate)
         .with_allow_neg_eigval(self.allow_neg_eigval)
         .with_use_short_conv(self.use_short_conv)

@@ -7,10 +7,10 @@
 //! forget gate, the Householder count).
 //!
 //! ```text
-//!   x → in_proj → [ q | k | v | β? | gate? | extra? ]
+//!   x → in_proj → [ q | k | v | β? or (b | w)? | gate? | extra? ]
 //!                   └──── short conv ────┘
-//!                              ↓ activation, head split, QK-norm, σ(β)
-//!                        q, k, v, β  (+ gate, extra)
+//!                              ↓ activation, head split, QK-norm, σ(gates)
+//!                        q, k, v, erase, write  (+ gate, extra)
 //! ```
 //!
 //! The projection is **fused**: one `Linear` produces every segment, as
@@ -36,6 +36,37 @@ use burn_stack::modules::{Silu, sanity as san};
 use super::conv::{ConvActivation, ShortConv, ShortConvConfig};
 use super::norm::{QkActivation, QkNorm};
 
+/// How a block gates its write into the recurrent state.
+///
+/// The delta rule's update does two things at once — erase what the state holds
+/// at `k`, then commit `v` — and this says how finely the block may separate
+/// them. All three are the same recurrence: see [`crate::delta`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WriteGate {
+    /// `β ≡ 1`: a pure projection write, nothing projected.
+    Fixed,
+    /// One `β` per head, doing both jobs at once.
+    #[default]
+    Scalar,
+    /// [GDN-2](crate::gdn2): an erase gate per **key** channel and a write gate
+    /// per **value** channel, projected independently.
+    Channel,
+}
+
+/// A write-gate segment as it comes out of the fused projection, before the
+/// head split and the squashing.
+enum WriteRaw<const D: usize> {
+    /// Nothing projected (`β ≡ 1`).
+    Fixed,
+    /// `[.., n_householder · n_value_heads]`
+    Scalar(Tensor<D>),
+    /// `[.., n_householder · key_dim]` and `[.., n_householder · value_dim]`
+    Channel {
+        erase: Tensor<D>,
+        write: Tensor<D>,
+    },
+}
+
 /// The projected, activated, normalised inputs to the delta rule, for a full
 /// sequence.
 ///
@@ -49,8 +80,12 @@ pub struct Qkv {
     pub k_bShk: Tensor<4>,
     /// Values. `[batch, sequence·n_householder, nheads, head_v_dim]`
     pub v_bShv: Tensor<4>,
-    /// Write strengths. `[batch, sequence·n_householder, nheads]`
-    pub beta_bSh: Tensor<3>,
+    /// Erase gate, on the key axis.
+    /// `[batch, sequence·n_householder, nheads, 1 | head_k_dim]`
+    pub erase_bShK: Tensor<4>,
+    /// Write gate, on the value axis.
+    /// `[batch, sequence·n_householder, nheads, 1 | head_v_dim]`
+    pub write_bShV: Tensor<4>,
     /// Output gate, when the block has one. `[batch, sequence, nheads, head_v_dim]`
     pub gate_bshv: Option<Tensor<4>>,
     /// Raw trailing channels the family asked for (Gated DeltaNet's forget-gate
@@ -60,6 +95,7 @@ pub struct Qkv {
 
 /// [`Qkv`] for a single token: the sequence axis is gone, but the micro-step
 /// axis remains explicit.
+#[allow(non_snake_case)]
 pub struct QkvStep {
     /// Query. `[batch, nheads, head_k_dim]`
     pub q_bhk: Tensor<3>,
@@ -67,8 +103,10 @@ pub struct QkvStep {
     pub k_buhk: Tensor<4>,
     /// Values. `[batch, n_householder, nheads, head_v_dim]`
     pub v_buhv: Tensor<4>,
-    /// Write strengths. `[batch, n_householder, nheads]`
-    pub beta_buh: Tensor<3>,
+    /// Erase gate. `[batch, n_householder, nheads, 1 | head_k_dim]`
+    pub erase_buhK: Tensor<4>,
+    /// Write gate. `[batch, n_householder, nheads, 1 | head_v_dim]`
+    pub write_buhV: Tensor<4>,
     /// Output gate, when the block has one. `[batch, nheads, head_v_dim]`
     pub gate_bhv: Option<Tensor<3>>,
     /// Raw trailing channels. `[batch, extra_channels]`
@@ -103,8 +141,9 @@ pub struct QkvProjection {
     pub head_v_dim: usize,
     /// Delta-rule micro-steps per token (1 for everything but DeltaProduct).
     pub n_householder: usize,
-    /// Whether `β` is projected (otherwise `β ≡ 1`: a pure projection write).
-    pub has_beta: bool,
+    /// How the write into the state is gated. A non-parameter constant.
+    #[module(skip)]
+    pub write_gate: WriteGate,
     /// Whether an output gate is projected.
     pub has_gate: bool,
     /// `β ∈ (0, 2)` rather than `(0, 1)`, admitting negative eigenvalues.
@@ -142,14 +181,24 @@ impl QkvProjection {
         self.key_dim() + self.n_householder * (self.key_dim() + self.value_dim())
     }
 
+    /// Columns the write gate occupies in `in_proj`.
+    ///
+    /// The erase gate follows the *query/key* head count and is replicated up
+    /// to the value heads after the split, exactly as `q`/`k` are; the write
+    /// gate is projected per value head directly.
+    pub fn write_gate_width(&self) -> usize {
+        self.n_householder
+            * match self.write_gate {
+                WriteGate::Fixed => 0,
+                WriteGate::Scalar => self.n_value_heads,
+                WriteGate::Channel => self.key_dim() + self.value_dim(),
+            }
+    }
+
     /// The `in_proj` output width.
     pub fn d_in_proj(&self) -> usize {
         self.conv_dim()
-            + if self.has_beta {
-                self.n_householder * self.n_value_heads
-            } else {
-                0
-            }
+            + self.write_gate_width()
             + if self.has_gate { self.value_dim() } else { 0 }
             + self.extra_channels
     }
@@ -191,8 +240,15 @@ impl QkvProjection {
             ("k", self.n_householder * self.key_dim()),
             ("v", self.n_householder * self.value_dim()),
         ];
-        if self.has_beta {
-            segments.push(("beta", self.n_householder * self.n_value_heads));
+        match self.write_gate {
+            WriteGate::Fixed => {}
+            WriteGate::Scalar => {
+                segments.push(("beta", self.n_householder * self.n_value_heads));
+            }
+            WriteGate::Channel => {
+                segments.push(("erase", self.n_householder * self.key_dim()));
+                segments.push(("write", self.n_householder * self.value_dim()));
+            }
         }
         if self.has_gate {
             segments.push(("gate", self.value_dim()));
@@ -203,7 +259,8 @@ impl QkvProjection {
         segments
     }
 
-    /// Split `[q|k|v]`, `β`, `gate` and `extra` out of a projection output.
+    /// Split `[q|k|v]`, the write gate, the output gate and `extra` out of a
+    /// projection output.
     ///
     /// Zero-width segments are never requested (Burn drops a zero-length split
     /// part), so the optional pieces are appended only when present.
@@ -211,10 +268,15 @@ impl QkvProjection {
         &self,
         projected: Tensor<D>,
         dim: usize,
-    ) -> (Tensor<D>, Option<Tensor<D>>, Option<Tensor<D>>, Option<Tensor<D>>) {
+    ) -> (Tensor<D>, WriteRaw<D>, Option<Tensor<D>>, Option<Tensor<D>>) {
         let mut sizes = vec![self.conv_dim()];
-        if self.has_beta {
-            sizes.push(self.n_householder * self.n_value_heads);
+        match self.write_gate {
+            WriteGate::Fixed => {}
+            WriteGate::Scalar => sizes.push(self.n_householder * self.n_value_heads),
+            WriteGate::Channel => {
+                sizes.push(self.n_householder * self.key_dim());
+                sizes.push(self.n_householder * self.value_dim());
+            }
         }
         if self.has_gate {
             sizes.push(self.value_dim());
@@ -224,10 +286,18 @@ impl QkvProjection {
         }
         let mut parts = projected.split_with_sizes(sizes, dim).into_iter();
         let qkv = parts.next().expect("qkv segment");
-        let beta = self.has_beta.then(|| parts.next().expect("beta segment"));
-        let gate = self.has_gate.then(|| parts.next().expect("gate segment"));
-        let extra = (self.extra_channels > 0).then(|| parts.next().expect("extra segment"));
-        (qkv, beta, gate, extra)
+        let mut next = || parts.next().expect("write-gate segment");
+        let write_raw = match self.write_gate {
+            WriteGate::Fixed => WriteRaw::Fixed,
+            WriteGate::Scalar => WriteRaw::Scalar(next()),
+            WriteGate::Channel => WriteRaw::Channel {
+                erase: next(),
+                write: next(),
+            },
+        };
+        let gate = self.has_gate.then(&mut next);
+        let extra = (self.extra_channels > 0).then(next);
+        (qkv, write_raw, gate, extra)
     }
 
     /// Replicate `q`/`k` across the value heads sharing each query/key head.
@@ -241,17 +311,49 @@ impl QkvProjection {
         burn_stack::modules::gqa_expand_to_heads::<D, DP1>(t, D - 2, self.n_value_heads)
     }
 
-    /// `σ(β)`, doubled when negative eigenvalues are allowed, or `1` when the
-    /// block projects no `β`.
+    /// Turn a raw write-gate segment into the `(erase, write)` pair the delta
+    /// rule takes, at their broadcast widths.
     ///
-    /// `β = 2` makes `I − β k kᵀ` an exact reflection, so the doubling is what
-    /// turns the transition from "forget along `k`" into "negate along `k`".
-    fn squash_beta<const D: usize>(&self, raw: Option<Tensor<D>>, ones_like: Tensor<D>) -> Tensor<D> {
-        let beta = match raw {
-            Some(raw) => burn::tensor::activation::sigmoid(raw),
-            None => ones_like.ones_like(),
-        };
-        if self.allow_neg_eigval { beta * 2.0 } else { beta }
+    /// `σ` squashes both into `(0, 1)`; `allow_neg_eigval` doubles the **erase**
+    /// gate, because `β = 2` (resp. `b = 2`) is what makes `I − k (b ⊙ k)ᵀ` an
+    /// exact reflection rather than a contraction. Under [`WriteGate::Scalar`]
+    /// the one number is both halves — including the doubling, which is what
+    /// the scalar reference does.
+    ///
+    /// `leading` is `[batch, sequence·n_householder]` for a sequence and
+    /// `[batch, n_householder]` for a single token.
+    #[allow(non_snake_case)]
+    fn squash_write<const D: usize>(
+        &self,
+        raw: WriteRaw<D>,
+        leading: [usize; 2],
+        device: &Device,
+    ) -> (Tensor<4>, Tensor<4>) {
+        let [batch, steps] = leading;
+        let nheads_v = self.n_value_heads;
+        let sigmoid = burn::tensor::activation::sigmoid;
+        let doubled = |t: Tensor<4>| if self.allow_neg_eigval { t * 2.0 } else { t };
+        match raw {
+            WriteRaw::Fixed => {
+                let ones = Tensor::<4>::ones(Shape::new([batch, steps, nheads_v, 1]), device);
+                (doubled(ones.clone()), ones)
+            }
+            WriteRaw::Scalar(raw) => {
+                let beta = sigmoid(raw).reshape([batch, steps, nheads_v, 1]);
+                (doubled(beta.clone()), beta)
+            }
+            WriteRaw::Channel { erase, write } => {
+                // The erase gate rides the query/key heads, so it is replicated
+                // across a group exactly as `q`/`k` are.
+                let erase = self.expand_to_value_heads::<4, 5>(
+                    sigmoid(erase).reshape([batch, steps, self.nheads, self.head_k_dim]),
+                );
+                (
+                    doubled(erase),
+                    sigmoid(write).reshape([batch, steps, nheads_v, self.head_v_dim]),
+                )
+            }
+        }
     }
 
     /// Full-sequence projection.
@@ -271,7 +373,7 @@ impl QkvProjection {
 
         let projected = self.in_proj.forward(x_bsd);
         assert_eq!([batch, sequence, self.d_in_proj()], projected.dims());
-        let (qkv_bsw, beta_raw, gate_raw, extra_bsx) = self.split_projection(projected, 2);
+        let (qkv_bsw, write_raw, gate_raw, extra_bsx) = self.split_projection(projected, 2);
 
         // ── Short convolution over the [q | k | v] channels ──────────────────
         let (qkv_bsw, next_window) = match (&self.conv, conv_window_bwc) {
@@ -313,23 +415,23 @@ impl QkvProjection {
         let q_bshk = self.qk_norm.apply(q_bshk);
         let k_bShk = self.qk_norm.apply(k_bShk);
 
-        let beta_bSh = self.squash_beta(
-            beta_raw.map(|b| b.reshape([batch, sequence * u, nheads_v])),
-            Tensor::zeros(Shape::new([batch, sequence * u, nheads_v]), &q_bshk.device()),
-        );
+        let (erase_bShK, write_bShV) =
+            self.squash_write(write_raw, [batch, sequence * u], &q_bshk.device());
         let gate_bshv = gate_raw.map(|g| g.reshape([batch, sequence, nheads_v, head_v_dim]));
 
         san(&q_bshk);
         san(&k_bShk);
         san(&v_bShv);
-        san(&beta_bSh);
+        san(&erase_bShK);
+        san(&write_bShV);
 
         (
             Qkv {
                 q_bshk,
                 k_bShk,
                 v_bShv,
-                beta_bSh,
+                erase_bShK,
+                write_bShV,
                 gate_bshv,
                 extra_bsx,
             },
@@ -351,7 +453,7 @@ impl QkvProjection {
 
         let projected = self.in_proj.forward(x_bd);
         assert_eq!([batch, self.d_in_proj()], projected.dims());
-        let (qkv_bw, beta_raw, gate_raw, extra_bx) = self.split_projection(projected, 1);
+        let (qkv_bw, write_raw, gate_raw, extra_bx) = self.split_projection(projected, 1);
 
         let (qkv_bw, next_window) = match (&self.conv, conv_window_bwc) {
             (Some(conv), Some(window)) => {
@@ -387,10 +489,7 @@ impl QkvProjection {
         let q_bhk = self.qk_norm.apply(q_bhk);
         let k_buhk = self.qk_norm.apply(k_buhk);
 
-        let beta_buh = self.squash_beta(
-            beta_raw.map(|b| b.reshape([batch, u, nheads_v])),
-            Tensor::zeros(Shape::new([batch, u, nheads_v]), &q_bhk.device()),
-        );
+        let (erase_buhK, write_buhV) = self.squash_write(write_raw, [batch, u], &q_bhk.device());
         let gate_bhv = gate_raw.map(|g| g.reshape([batch, nheads_v, head_v_dim]));
 
         (
@@ -398,7 +497,8 @@ impl QkvProjection {
                 q_bhk,
                 k_buhk,
                 v_buhv,
-                beta_buh,
+                erase_buhK,
+                write_buhV,
                 gate_bhv,
                 extra_bx,
             },
@@ -425,9 +525,9 @@ pub struct QkvProjectionConfig {
     /// Delta-rule micro-steps per token.
     #[config(default = 1)]
     pub n_householder: usize,
-    /// Project `β` (rather than fixing `β ≡ 1`).
-    #[config(default = true)]
-    pub has_beta: bool,
+    /// How the write into the state is gated.
+    #[config(default = "WriteGate::Scalar")]
+    pub write_gate: WriteGate,
     /// Project an output gate for the block's gated RMSNorm.
     #[config(default = false)]
     pub has_gate: bool,
@@ -490,7 +590,7 @@ impl QkvProjectionConfig {
             head_k_dim: self.head_k_dim,
             head_v_dim: self.head_v_dim,
             n_householder: self.n_householder,
-            has_beta: self.has_beta,
+            write_gate: self.write_gate,
             has_gate: self.has_gate,
             allow_neg_eigval: self.allow_neg_eigval,
             extra_channels: self.extra_channels,

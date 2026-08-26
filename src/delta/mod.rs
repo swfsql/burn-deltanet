@@ -26,12 +26,29 @@
 //! (negative eigenvalues) is what lets the recurrence *track* group structure
 //! instead of only forgetting it; see [`crate::common::norm`].
 //!
-//! `αₜ ∈ (0, 1]` is the optional scalar forget gate: `αₜ ≡ 1` is
+//! `αₜ ∈ (0, 1]` is the optional forget gate: `αₜ ≡ 1` is
 //! [DeltaNet](crate::deltanet), `αₜ = exp(Δₜ A)` is
 //! [Gated DeltaNet](crate::gated_deltanet). Both live in the same code here,
 //! with the gate as an `Option`, because the gated recurrence *is* the ungated
 //! one at `g = 0` — but a `None` gate skips the decay tensors outright rather
 //! than multiplying by ones.
+//!
+//! ## One rule, three gate widths
+//!
+//! `βₜ` above is *one number per head*: it sets both how much of the old
+//! association is erased and how much of `vₜ` is written. Widening it onto the
+//! channel axes decouples the two, and widening `αₜ` likewise gives each key
+//! channel its own timescale — which is [GDN-2](crate::gdn2):
+//!
+//! ```text
+//!   Sₜ = (I − kₜ (bₜ ⊙ kₜ)ᵀ) diag(αₜ) Sₜ₋₁ + kₜ (wₜ ⊙ vₜ)ᵀ
+//!        bₜ ∈ ℝ^head_k_dim   erase        wₜ ∈ ℝ^head_v_dim   write
+//! ```
+//!
+//! Setting `bₜ = wₜ = βₜ` and `αₜ` scalar recovers the line above *exactly*, so
+//! the core carries the gates at their broadcast width (`1` or the full
+//! channel count) and branches on nothing — see
+//! [`DeltaInput`](path::DeltaInput).
 //!
 //! ## The chunkwise form (WY representation)
 //!
@@ -67,6 +84,8 @@
 //! ## Layout
 //!
 //! - [`tri`] — the `(I − N)⁻¹` the WY transform needs, in `log₂ L` matmuls.
+//! - [`decay`] — the intra-chunk score matrices under a *per-channel* gate,
+//!   where the decay no longer factors out of the key contraction.
 //! - [`recurrent`] — the token-by-token recurrence: the definition above, and
 //!   the primitive each family's `step()` decodes with.
 //! - [`chunk`] — the chunkwise WY algorithm.
@@ -93,18 +112,24 @@
 //! | `w` | `conv_dim` = 2·`nheads`·`head_k_dim` + `nheads`·`head_v_dim` | — | — |
 //! | `u` | `n_householder` ([DeltaProduct](crate::delta_product)) | `num_householder` | 1 … 3 |
 //!
+//! Two upper-case *gate* axes appear on the delta rule's inputs: `K` is `1`
+//! (one erase/forget value per head) or `head_k_dim` (one per key channel), and
+//! `V` is `1` or `head_v_dim` on the write gate. See
+//! [`DeltaInput`](path::DeltaInput).
+//!
 //! Upper-case = a *relation* of the base dimensions (offset/multiple/concat):
-//! `S` is a padded `s`, `K` a `k−1`, and so on. Paper style (`Q, K, V, S, β`)
+//! `S` is a padded `s`, `U` a multiple of `u`, and so on. Paper style (`Q, K, V, S, β`)
 //! may appear in comments but never in code identifiers.
 
 pub mod chunk;
+pub mod decay;
 pub mod path;
 pub mod recurrent;
 pub mod tri;
 
 /// Public re-exports for the delta-rule core.
 pub mod prelude {
-    pub use super::path::{DeltaInput, DeltaPath};
+    pub use super::path::{DeltaInput, DeltaPath, beta_gates};
     pub use super::recurrent::delta_step;
     pub use super::tri::{TriSolve, unit_lower_inverse};
 }

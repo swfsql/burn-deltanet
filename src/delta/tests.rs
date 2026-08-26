@@ -16,8 +16,12 @@ struct Raw {
     q: Tensor<4>,
     k: Tensor<4>,
     v: Tensor<4>,
-    beta: Tensor<3>,
-    g: Option<Tensor<3>>,
+    /// `[batch, sequence, nheads, 1 | head_k_dim]`
+    erase: Tensor<4>,
+    /// `[batch, sequence, nheads, 1 | head_v_dim]`
+    write: Tensor<4>,
+    /// `[batch, sequence, nheads, 1 | head_k_dim]`
+    g: Option<Tensor<4>>,
     state: Tensor<4>,
 }
 
@@ -34,6 +38,27 @@ fn random_raw(
     random_state: bool,
     device: &Device,
 ) -> Raw {
+    random_raw_gates(
+        batch, sequence, nheads, head_k_dim, head_v_dim, beta_max, gated, random_state, false,
+        device,
+    )
+}
+
+/// As [`random_raw`], but `channel` widens every gate onto its channel axis —
+/// GDN-2's shape rather than the scalar families'.
+#[allow(clippy::too_many_arguments)]
+fn random_raw_gates(
+    batch: usize,
+    sequence: usize,
+    nheads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    beta_max: f64,
+    gated: bool,
+    random_state: bool,
+    channel: bool,
+    device: &Device,
+) -> Raw {
     let normal = Distribution::Normal(0.0, 1.0);
     let q = l2_normalize(Tensor::<4>::random(
         [batch, sequence, nheads, head_k_dim],
@@ -46,15 +71,30 @@ fn random_raw(
         device,
     ));
     let v = Tensor::<4>::random([batch, sequence, nheads, head_v_dim], normal, device);
-    let beta = Tensor::<3>::random(
-        [batch, sequence, nheads],
+    // Width 1 = one number per head; the full channel count = GDN-2.
+    let (k_gate, v_gate) = if channel {
+        (head_k_dim, head_v_dim)
+    } else {
+        (1, 1)
+    };
+    let erase = Tensor::<4>::random(
+        [batch, sequence, nheads, k_gate],
         Distribution::Uniform(0.05, beta_max),
         device,
     );
+    let write = if channel {
+        Tensor::<4>::random(
+            [batch, sequence, nheads, v_gate],
+            Distribution::Uniform(0.05, 1.0),
+            device,
+        )
+    } else {
+        erase.clone()
+    };
     // `g = log α ≤ 0`: a per-step decay in roughly (0.6, 1).
     let g = gated.then(|| {
-        Tensor::<3>::random(
-            [batch, sequence, nheads],
+        Tensor::<4>::random(
+            [batch, sequence, nheads, k_gate],
             Distribution::Uniform(-0.5, -0.01),
             device,
         )
@@ -72,7 +112,8 @@ fn random_raw(
         q,
         k,
         v,
-        beta,
+        erase,
+        write,
         g,
         state,
     }
@@ -83,21 +124,22 @@ struct Leaves {
     q: Param<Tensor<4>>,
     k: Param<Tensor<4>>,
     v: Param<Tensor<4>>,
-    beta: Param<Tensor<3>>,
-    g: Option<Param<Tensor<3>>>,
+    erase: Param<Tensor<4>>,
+    write: Param<Tensor<4>>,
+    g: Option<Param<Tensor<4>>>,
     state: Param<Tensor<4>>,
 }
 
 impl Leaves {
     fn from_raw(raw: &Raw) -> Self {
         let lift4 = |t: &Tensor<4>| Param::from_tensor(Tensor::from_inner(t.clone()));
-        let lift3 = |t: &Tensor<3>| Param::from_tensor(Tensor::from_inner(t.clone()));
         Self {
             q: lift4(&raw.q),
             k: lift4(&raw.k),
             v: lift4(&raw.v),
-            beta: lift3(&raw.beta),
-            g: raw.g.as_ref().map(lift3),
+            erase: lift4(&raw.erase),
+            write: lift4(&raw.write),
+            g: raw.g.as_ref().map(lift4),
             state: lift4(&raw.state),
         }
     }
@@ -107,8 +149,9 @@ impl Leaves {
             q_bshk: self.q.val(),
             k_bshk: self.k.val(),
             v_bshv: self.v.val(),
-            beta_bsh: self.beta.val(),
-            g_bsh: self.g.as_ref().map(|g| g.val()),
+            erase_bshK: self.erase.val(),
+            write_bshV: self.write.val(),
+            g_bshK: self.g.as_ref().map(|g| g.val()),
             state_bhkv: self.state.val(),
             scale: None,
         }
@@ -121,8 +164,9 @@ struct PathRun {
     d_q: Tensor<4>,
     d_k: Tensor<4>,
     d_v: Tensor<4>,
-    d_beta: Tensor<3>,
-    d_g: Option<Tensor<3>>,
+    d_erase: Tensor<4>,
+    d_write: Tensor<4>,
+    d_g: Option<Tensor<4>>,
     d_state: Tensor<4>,
 }
 
@@ -144,7 +188,8 @@ fn run_path(path: DeltaPath, raw: &Raw, y_head: &Tensor<4>, s_head: &Tensor<4>) 
         d_q: leaves.q.val().grad(&grads).expect("grad q"),
         d_k: leaves.k.val().grad(&grads).expect("grad k"),
         d_v: leaves.v.val().grad(&grads).expect("grad v"),
-        d_beta: leaves.beta.val().grad(&grads).expect("grad beta"),
+        d_erase: leaves.erase.val().grad(&grads).expect("grad erase"),
+        d_write: leaves.write.val().grad(&grads).expect("grad write"),
         d_g: leaves
             .g
             .as_ref()
@@ -169,8 +214,12 @@ fn assert_runs_match(baseline: &PathRun, other: &PathRun, label: &str, tol: f32)
     check("d_k", max_abs_diff(baseline.d_k.clone(), other.d_k.clone()));
     check("d_v", max_abs_diff(baseline.d_v.clone(), other.d_v.clone()));
     check(
-        "d_beta",
-        max_abs_diff(baseline.d_beta.clone(), other.d_beta.clone()),
+        "d_erase",
+        max_abs_diff(baseline.d_erase.clone(), other.d_erase.clone()),
+    );
+    check(
+        "d_write",
+        max_abs_diff(baseline.d_write.clone(), other.d_write.clone()),
     );
     check(
         "d_state",
@@ -318,8 +367,9 @@ fn split_calls_match_a_single_call() {
         q_bshk: raw.q.clone().narrow(1, from, len),
         k_bshk: raw.k.clone().narrow(1, from, len),
         v_bshv: raw.v.clone().narrow(1, from, len),
-        beta_bsh: raw.beta.clone().narrow(1, from, len),
-        g_bsh: raw.g.as_ref().map(|g| g.clone().narrow(1, from, len)),
+        erase_bshK: raw.erase.clone().narrow(1, from, len),
+        write_bshV: raw.write.clone().narrow(1, from, len),
+        g_bshK: raw.g.as_ref().map(|g| g.clone().narrow(1, from, len)),
         state_bhkv: state,
         scale: None,
     };
@@ -350,13 +400,15 @@ fn from_fixture<const D: usize>(data: &[f64], shape: [usize; D], device: &Device
 
 fn fixture_input(gated: bool, device: &Device) -> DeltaInput {
     let [batch, sequence, nheads, head_k_dim, head_v_dim] = reference::DIMS;
+    let beta = from_fixture(reference::IN_BETA, [batch, sequence, nheads, 1], device);
     DeltaInput {
         q_bshk: from_fixture(reference::IN_Q, [batch, sequence, nheads, head_k_dim], device),
         k_bshk: from_fixture(reference::IN_K, [batch, sequence, nheads, head_k_dim], device),
         v_bshv: from_fixture(reference::IN_V, [batch, sequence, nheads, head_v_dim], device),
-        beta_bsh: from_fixture(reference::IN_BETA, [batch, sequence, nheads], device),
-        g_bsh: gated.then(|| {
-            from_fixture(reference::IN_G, [batch, sequence, nheads], device)
+        erase_bshK: beta.clone(),
+        write_bshV: beta,
+        g_bshK: gated.then(|| {
+            from_fixture(reference::IN_G, [batch, sequence, nheads, 1], device)
         }),
         state_bhkv: from_fixture(
             reference::IN_STATE,
@@ -418,16 +470,17 @@ fn a_zero_gate_is_the_ungated_delta_rule() {
         batch, sequence, nheads, head_k_dim, head_v_dim, 0.95, false, true, &device,
     );
 
-    let input = |g: Option<Tensor<3>>| DeltaInput {
+    let input = |g: Option<Tensor<4>>| DeltaInput {
         q_bshk: raw.q.clone(),
         k_bshk: raw.k.clone(),
         v_bshv: raw.v.clone(),
-        beta_bsh: raw.beta.clone(),
-        g_bsh: g,
+        erase_bshK: raw.erase.clone(),
+        write_bshV: raw.write.clone(),
+        g_bshK: g,
         state_bhkv: raw.state.clone(),
         scale: None,
     };
-    let zeros = Tensor::zeros([batch, sequence, nheads], &device);
+    let zeros = Tensor::zeros([batch, sequence, nheads, 1], &device);
 
     for path in [DeltaPath::Recurrent, DeltaPath::chunk_len(5)] {
         let (y_none, state_none) = input(None).run(path);
@@ -436,6 +489,224 @@ fn a_zero_gate_is_the_ungated_delta_rule() {
         assert!(
             max_abs_diff(state_none, state_zero) < 1e-5,
             "{path:?}: states differ",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Channel-wise gates (GDN-2)
+// ---------------------------------------------------------------------------
+
+/// Same contract, GDN-2's gate widths: the chunked path must still equal the
+/// recurrent definition on values *and* gradients. The chunk path takes a
+/// genuinely different route here — the decay no longer factors out of the key
+/// contraction, so the score matrices go through
+/// [`decay::BlockDecay`](crate::delta::decay).
+#[allow(clippy::too_many_arguments)]
+fn check_channel_chunk_matches_recurrent(
+    batch: usize,
+    sequence: usize,
+    nheads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    chunk_len: usize,
+    beta_max: f64,
+    random_state: bool,
+    tol: f32,
+) {
+    let device: Device = Default::default();
+    let raw = random_raw_gates(
+        batch,
+        sequence,
+        nheads,
+        head_k_dim,
+        head_v_dim,
+        beta_max,
+        true,
+        random_state,
+        true,
+        &device,
+    );
+    let y_head = Tensor::<4>::random(
+        [batch, sequence, nheads, head_v_dim],
+        Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+    let s_head = Tensor::<4>::random(
+        [batch, nheads, head_k_dim, head_v_dim],
+        Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+
+    let baseline = run_path(DeltaPath::Recurrent, &raw, &y_head, &s_head);
+    for solve in [TriSolve::Doubling, TriSolve::Neumann] {
+        let run = run_path(
+            DeltaPath::Chunk {
+                chunk_len: Some(chunk_len),
+                solve,
+            },
+            &raw,
+            &y_head,
+            &s_head,
+        );
+        assert_runs_match(
+            &baseline,
+            &run,
+            &format!("Chunk({chunk_len}, {solve:?}) with channel gates"),
+            tol,
+        );
+    }
+}
+
+#[test]
+fn chunk_matches_recurrent_with_channel_gates() {
+    check_channel_chunk_matches_recurrent(2, 16, 3, 8, 8, 8, 0.95, false, 1e-3);
+}
+
+#[test]
+fn chunk_matches_recurrent_with_channel_gates_from_a_carried_state() {
+    check_channel_chunk_matches_recurrent(2, 12, 2, 8, 16, 4, 0.95, true, 1e-3);
+}
+
+/// A chunk longer than one reference block, so the block-decomposed score
+/// matrices are exercised with more than one block *and* a partial last chunk.
+#[test]
+fn chunk_matches_recurrent_with_channel_gates_across_reference_blocks() {
+    check_channel_chunk_matches_recurrent(2, 40, 2, 8, 8, 32, 0.95, true, 2e-3);
+    check_channel_chunk_matches_recurrent(1, 37, 1, 4, 6, 16, 1.95, true, 2e-3);
+}
+
+/// The chunk length remains a performance knob under channel gates — including
+/// across the reference-block boundary, which is where a wrong reference point
+/// would show up.
+#[test]
+fn channel_chunk_len_does_not_change_the_answer() {
+    let device: Device = Default::default();
+    let (batch, sequence, nheads, head_k_dim, head_v_dim) = (2, 24, 2, 8, 8);
+    let raw = random_raw_gates(
+        batch, sequence, nheads, head_k_dim, head_v_dim, 0.95, true, true, true, &device,
+    );
+    let y_head = Tensor::<4>::random(
+        [batch, sequence, nheads, head_v_dim],
+        Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+    let s_head = Tensor::<4>::random(
+        [batch, nheads, head_k_dim, head_v_dim],
+        Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+
+    let baseline = run_path(DeltaPath::Recurrent, &raw, &y_head, &s_head);
+    for chunk_len in [3, 6, 8, 12, 16, 24, 32] {
+        let run = run_path(DeltaPath::chunk_len(chunk_len), &raw, &y_head, &s_head);
+        assert_runs_match(&baseline, &run, &format!("Chunk({chunk_len})"), 2e-3);
+    }
+}
+
+/// Widening a per-head `β` and a per-head `g` onto their channel axes changes
+/// nothing: the scalar rule *is* the channel rule with constant gates. This is
+/// what lets one core serve both, and what makes GDN-2 a strict generalisation
+/// of Gated DeltaNet rather than a separate recurrence.
+#[test]
+fn broadcast_channel_gates_are_the_scalar_delta_rule() {
+    let device: Device = Default::default();
+    let (batch, sequence, nheads, head_k_dim, head_v_dim) = (2, 20, 2, 8, 12);
+    let raw = random_raw(
+        batch, sequence, nheads, head_k_dim, head_v_dim, 0.95, true, true, &device,
+    );
+
+    // The same numbers, materialised across every channel.
+    let widen = |t: &Tensor<4>, width: usize| -> Tensor<4> {
+        t.clone() + Tensor::zeros([batch, sequence, nheads, width], &device)
+    };
+    let widened = Raw {
+        q: raw.q.clone(),
+        k: raw.k.clone(),
+        v: raw.v.clone(),
+        erase: widen(&raw.erase, head_k_dim),
+        write: widen(&raw.write, head_v_dim),
+        g: raw.g.as_ref().map(|g| widen(g, head_k_dim)),
+        state: raw.state.clone(),
+    };
+
+    let y_head = Tensor::<4>::random(
+        [batch, sequence, nheads, head_v_dim],
+        Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+    let s_head = Tensor::<4>::random(
+        [batch, nheads, head_k_dim, head_v_dim],
+        Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+
+    for path in [DeltaPath::Recurrent, DeltaPath::chunk_len(8)] {
+        let scalar = run_path(path, &raw, &y_head, &s_head);
+        let channel = run_path(path, &widened, &y_head, &s_head);
+        assert!(
+            max_abs_diff(scalar.y, channel.y) < 1e-4,
+            "{path:?}: outputs differ",
+        );
+        assert!(
+            max_abs_diff(scalar.state, channel.state) < 1e-4,
+            "{path:?}: final states differ",
+        );
+    }
+}
+
+/// GDN-2 against `flash-linear-attention`'s own `naive_recurrent_gdn2` on the
+/// same fixed input the scalar families are pinned to.
+#[test]
+fn matches_the_reference_gdn2() {
+    let device: Device = Default::default();
+    let [batch, sequence, nheads, head_k_dim, head_v_dim] = reference::DIMS;
+    let want_y = from_fixture(
+        reference::GDN2_Y,
+        [batch, sequence, nheads, head_v_dim],
+        &device,
+    );
+    let want_state = from_fixture(
+        reference::GDN2_STATE,
+        [batch, nheads, head_k_dim, head_v_dim],
+        &device,
+    );
+
+    let input = || DeltaInput {
+        q_bshk: from_fixture(reference::IN_Q, [batch, sequence, nheads, head_k_dim], &device),
+        k_bshk: from_fixture(reference::IN_K, [batch, sequence, nheads, head_k_dim], &device),
+        v_bshv: from_fixture(reference::IN_V, [batch, sequence, nheads, head_v_dim], &device),
+        erase_bshK: from_fixture(reference::IN_B, [batch, sequence, nheads, head_k_dim], &device),
+        write_bshV: from_fixture(reference::IN_W, [batch, sequence, nheads, head_v_dim], &device),
+        g_bshK: Some(from_fixture(
+            reference::IN_GK,
+            [batch, sequence, nheads, head_k_dim],
+            &device,
+        )),
+        state_bhkv: from_fixture(
+            reference::IN_STATE,
+            [batch, nheads, head_k_dim, head_v_dim],
+            &device,
+        ),
+        scale: None,
+    };
+
+    for path in [
+        DeltaPath::Recurrent,
+        DeltaPath::chunk_len(3),
+        DeltaPath::chunk_len(4),
+        DeltaPath::chunk_len(16),
+    ] {
+        let (y, state) = input().run(path);
+        let y_diff = max_abs_diff(y, want_y.clone());
+        let state_diff = max_abs_diff(state, want_state.clone());
+        assert!(
+            y_diff < 1e-4,
+            "{path:?}: output differs from the reference by {y_diff}",
+        );
+        assert!(
+            state_diff < 1e-4,
+            "{path:?}: final state differs from the reference by {state_diff}",
         );
     }
 }
