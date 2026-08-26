@@ -334,3 +334,75 @@ fn split_calls_match_a_single_call() {
     assert!(max_abs_diff(y_whole, y_split) < 1e-4);
     assert!(max_abs_diff(state_whole, state_end) < 1e-4);
 }
+
+// ---------------------------------------------------------------------------
+// Cross-check against the reference implementation
+// ---------------------------------------------------------------------------
+
+mod reference;
+
+/// Rebuild a fixture tensor at the backend's working precision.
+fn from_fixture<const D: usize>(data: &[f64], shape: [usize; D], device: &Device) -> Tensor<D> {
+    assert_eq!(data.len(), shape.iter().product::<usize>());
+    let values: Vec<f32> = data.iter().map(|v| *v as f32).collect();
+    Tensor::from_data(burn::tensor::TensorData::new(values, shape), device)
+}
+
+fn fixture_input(gated: bool, device: &Device) -> DeltaInput {
+    let [batch, sequence, nheads, head_k_dim, head_v_dim] = reference::DIMS;
+    DeltaInput {
+        q_bshk: from_fixture(reference::IN_Q, [batch, sequence, nheads, head_k_dim], device),
+        k_bshk: from_fixture(reference::IN_K, [batch, sequence, nheads, head_k_dim], device),
+        v_bshv: from_fixture(reference::IN_V, [batch, sequence, nheads, head_v_dim], device),
+        beta_bsh: from_fixture(reference::IN_BETA, [batch, sequence, nheads], device),
+        g_bsh: gated.then(|| {
+            from_fixture(reference::IN_G, [batch, sequence, nheads], device)
+        }),
+        state_bhkv: from_fixture(
+            reference::IN_STATE,
+            [batch, nheads, head_k_dim, head_v_dim],
+            device,
+        ),
+        scale: None,
+    }
+}
+
+/// Every path must reproduce `flash-linear-attention`'s own naive delta rule on
+/// a fixed input — the check that this is a port and not merely a
+/// self-consistent invention.
+fn check_matches_reference(gated: bool, expected_y: &[f64], expected_state: &[f64]) {
+    let device: Device = Default::default();
+    let [batch, sequence, nheads, head_k_dim, head_v_dim] = reference::DIMS;
+    let want_y = from_fixture(expected_y, [batch, sequence, nheads, head_v_dim], &device);
+    let want_state = from_fixture(
+        expected_state,
+        [batch, nheads, head_k_dim, head_v_dim],
+        &device,
+    );
+
+    for path in [
+        DeltaPath::Recurrent,
+        DeltaPath::chunk_len(3),
+        DeltaPath::chunk_len(4),
+        DeltaPath::chunk_len(16),
+    ] {
+        let (y, state) = fixture_input(gated, &device).run(path);
+        let y_diff = max_abs_diff(y, want_y.clone());
+        let state_diff = max_abs_diff(state, want_state.clone());
+        assert!(y_diff < 1e-4, "{path:?}: output differs from the reference by {y_diff}");
+        assert!(
+            state_diff < 1e-4,
+            "{path:?}: final state differs from the reference by {state_diff}",
+        );
+    }
+}
+
+#[test]
+fn matches_the_reference_delta_rule() {
+    check_matches_reference(false, reference::UNGATED_Y, reference::UNGATED_STATE);
+}
+
+#[test]
+fn matches_the_reference_gated_delta_rule() {
+    check_matches_reference(true, reference::GATED_Y, reference::GATED_STATE);
+}

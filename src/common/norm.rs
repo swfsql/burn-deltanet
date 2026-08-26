@@ -95,3 +95,50 @@ pub fn sum_normalize<const D: usize>(x: Tensor<D>) -> Tensor<D> {
     let denom = x.clone().sum_dim(D - 1) + burn_stack::utils::div_eps(dtype) as f64;
     x / denom
 }
+
+// ---------------------------------------------------------------------------
+// OutNorm  (the per-head output normalisation)
+// ---------------------------------------------------------------------------
+
+use burn::module::Module;
+use burn_stack::modules::{RmsNorm, RmsNormConfig, RmsNormGated, RmsNormGatedConfig};
+
+/// The RMSNorm applied to the delta rule's output, gated or not.
+///
+/// It normalises over **`head_v_dim`**, per head — not over the concatenated
+/// `value_dim` — which is what the reference does and what keeps heads from
+/// competing for the same scale. The gated form is
+/// `y = rms(o)·γ ⊙ silu(gate)`: the gate is a *post*-normalisation modulation,
+/// unlike Mamba-2's `z`, which can also be applied before the norm.
+#[derive(Module, Debug)]
+pub enum OutNorm {
+    /// Gated: consumes the block's projected output gate.
+    Gated(RmsNormGated),
+    /// Plain: the block projects no gate.
+    Plain(RmsNorm),
+}
+
+impl OutNorm {
+    /// Normalise `x` over its last dimension, applying `gate` iff this is
+    /// [`OutNorm::Gated`].
+    ///
+    /// Panics on a mismatch — a gated norm without a gate (or the reverse)
+    /// means the block's projection and its norm disagree.
+    pub fn forward<const D: usize>(&self, x: Tensor<D>, gate: Option<Tensor<D>>) -> Tensor<D> {
+        match (self, gate) {
+            (Self::Gated(norm), Some(gate)) => norm.forward(x, gate),
+            (Self::Plain(norm), None) => norm.forward(x),
+            (Self::Gated(_), None) => panic!("OutNorm::Gated needs an output gate"),
+            (Self::Plain(_), Some(_)) => panic!("OutNorm::Plain takes no output gate"),
+        }
+    }
+
+    /// Allocate the norm over `head_v_dim` on `device`, gated iff `has_gate`.
+    pub fn init(head_v_dim: usize, has_gate: bool, device: &Device) -> Self {
+        if has_gate {
+            Self::Gated(RmsNormGatedConfig::new(head_v_dim).init(device))
+        } else {
+            Self::Plain(RmsNormConfig::new(head_v_dim).init(device))
+        }
+    }
+}
