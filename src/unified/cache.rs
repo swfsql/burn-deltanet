@@ -2,10 +2,10 @@
 //! `impl BlockConfig`, `impl CacheStack` — plus the runtime-tagged
 //! [`DeltaCaches`] the runtime-selectable networks thread through.
 //!
-//! The three impls are near-identical, because the three families differ in
-//! what they *project*, not in what they *carry*: one convolution window and
-//! one `[batch, nheads, head_k_dim, head_v_dim]` associative memory, whatever
-//! the transition does to it.
+//! The impls are near-identical, because the families differ in what they
+//! *project*, not in what they *carry*: one convolution window and one
+//! `[batch, nheads, head_k_dim, head_v_dim]` associative memory, whatever the
+//! transition does to it.
 
 use burn::prelude::*;
 use burn_stack::modules::{Block, BlockConfig, CacheStack};
@@ -28,13 +28,16 @@ pub enum DeltaCaches {
     /// DeltaProduct caches.
     #[cfg(feature = "delta-product")]
     DeltaProduct(crate::delta_product::prelude::DeltaProductCaches),
+    /// GDN-2 caches.
+    #[cfg(feature = "gdn2")]
+    GatedDeltaNet2(crate::gdn2::prelude::GatedDeltaNet2Caches),
 }
 
 /// Emit the four impls a family owes the stack.
 ///
 /// Each family's cache is the same two fields under a different name, and each
 /// block's `forward`/`step` have the same signature, so the wiring is the same
-/// text three times over — written once here rather than copied.
+/// text once per family — written once here rather than copied.
 macro_rules! impl_block_for_family {
     (
         block: $block:ty,
@@ -166,6 +169,21 @@ mod impl_delta_product {
     }
 }
 
+#[cfg(feature = "gdn2")]
+mod impl_gdn2 {
+    use super::*;
+    use crate::gdn2::prelude::{
+        GatedDeltaNet2, GatedDeltaNet2Cache, GatedDeltaNet2Caches, GatedDeltaNet2Config,
+    };
+
+    impl_block_for_family! {
+        block: GatedDeltaNet2,
+        config: GatedDeltaNet2Config,
+        cache: GatedDeltaNet2Cache,
+        caches: GatedDeltaNet2Caches,
+    }
+}
+
 impl DeltaCaches {
     /// The family these caches belong to, for mismatch messages.
     pub fn family_name(&self) -> &'static str {
@@ -176,6 +194,8 @@ impl DeltaCaches {
             Self::GatedDeltaNet(_) => "Gated DeltaNet",
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(_) => "DeltaProduct",
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(_) => "GDN-2",
         }
     }
 
@@ -188,6 +208,8 @@ impl DeltaCaches {
             Self::GatedDeltaNet(c) => c.caches_len(),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(c) => c.caches_len(),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(c) => c.caches_len(),
         }
     }
 }

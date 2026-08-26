@@ -22,11 +22,13 @@
 //! own while the forward keeps one GEMM. Two kinds of channel are deliberately
 //! *excluded*:
 //!
-//! - **Per-head scalars** — `β` and the forget gate's `Δ` project one number
-//!   per head. A `[d_model, nheads]` slice is a stack of independent linear
-//!   functionals, not a matrix whose singular values mean anything; Muon's
-//!   orthogonalisation would mix heads that share nothing. They stay on AdamW,
-//!   as do the 1-D `a_log`/`dt_bias`/`γ` and the 3-D convolution weight.
+//! - **Per-head scalars** — `β` and the scalar forget gate's `Δ` project one
+//!   number per head. A `[d_model, nheads]` slice is a stack of independent
+//!   linear functionals, not a matrix whose singular values mean anything;
+//!   Muon's orthogonalisation would mix heads that share nothing. They stay on
+//!   AdamW, as do the 1-D `a_log`/`dt_bias`/`γ` and the 3-D convolution weight.
+//!   [GDN-2](crate::gdn2) has no such channel: its erase, write and `Δ` maps
+//!   all produce feature *vectors*, so they are Muon's.
 //! - **Nothing else.** `q`, `k`, `v` and the output gate *are* matrices, and
 //!   under [DeltaProduct](crate::delta_product) each of the `u` key and value
 //!   maps is listed separately — orthogonalising the `u` of them jointly would
@@ -37,14 +39,15 @@ pub mod family;
 pub mod bidi;
 pub mod network;
 
-// The container suite runs every family through one enum, so it needs all
-// three compiled in.
+// The container suite runs every family through one enum, so it needs them all
+// compiled in.
 #[cfg(all(
     test,
     feature = "_dev-test",
     feature = "deltanet",
     feature = "gated-deltanet",
-    feature = "delta-product"
+    feature = "delta-product",
+    feature = "gdn2"
 ))]
 mod tests;
 

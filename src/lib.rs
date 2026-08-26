@@ -12,6 +12,8 @@
 //!   Improving Mamba2 with Delta Rule*.
 //! - [DeltaProduct](https://arxiv.org/abs/2502.10297) — *DeltaProduct:
 //!   Improving State-Tracking in Linear RNNs via Householder Products*.
+//! - GDN-2 — *Gated DeltaNet-2: Decoupling Erase and Write in Linear
+//!   Attention*.
 //!
 //! The goal is clarity: the official Triton kernels
 //! ([`flash-linear-attention`](https://github.com/fla-org/flash-linear-attention))
@@ -39,8 +41,9 @@
 //!
 //! - `βₜ ∈ (0, 1)` (or `(0, 2)` when negative eigenvalues are allowed) is the
 //!   per-head write strength.
-//! - `αₜ ∈ (0, 1]` is the optional scalar forget gate — `αₜ ≡ 1` is DeltaNet,
-//!   `αₜ = exp(Δₜ A)` is Gated DeltaNet.
+//! - `αₜ ∈ (0, 1]` is the optional forget gate — `αₜ ≡ 1` is DeltaNet,
+//!   `αₜ = exp(Δₜ A)` is Gated DeltaNet. GDN-2 widens both `αₜ` and `βₜ` onto
+//!   channel axes, which makes the scalar rule above its constant-gate case.
 //! - `qₜ`, `kₜ` are (by default) L2-normalised, which is what keeps the
 //!   Householder factor non-expansive.
 //!
@@ -58,6 +61,8 @@
 //!   `αₜ = exp(Δₜ A)`.
 //! - [`delta_product`] — DeltaProduct: `n_householder` delta-rule micro-steps
 //!   per token, i.e. a *product* of Householder transitions per transition.
+//! - [`gdn2`] — GDN-2: Gated DeltaNet with the erase and write halves of the
+//!   update decoupled into independent channel-wise gates.
 //!
 //! Everything *around* the block — the Pre-LN [`Layer`](burn_stack::modules::Layer),
 //! the (virtual-)layer [`Layers`](burn_stack::modules::Layers) stack,
@@ -113,6 +118,8 @@ pub mod delta_product;
 pub mod deltanet;
 #[cfg(feature = "gated-deltanet")]
 pub mod gated_deltanet;
+#[cfg(feature = "gdn2")]
+pub mod gdn2;
 
 pub mod unified;
 
@@ -130,6 +137,9 @@ pub mod prelude {
 
     #[cfg(feature = "delta-product")]
     pub use crate::delta_product::{self, prelude::*};
+
+    #[cfg(feature = "gdn2")]
+    pub use crate::gdn2::{self, prelude::*};
 
     // The runtime-selectable unified API (this crate).
     pub use crate::unified::{

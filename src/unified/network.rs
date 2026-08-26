@@ -175,6 +175,9 @@ pub enum DeltaLatentNet {
     /// DeltaProduct latent network.
     #[cfg(feature = "delta-product")]
     DeltaProduct(LatentNetwork<crate::delta_product::prelude::DeltaProduct>),
+    /// GDN-2 latent network.
+    #[cfg(feature = "gdn2")]
+    GatedDeltaNet2(LatentNetwork<crate::gdn2::prelude::GatedDeltaNet2>),
 }
 
 impl DeltaLatentNet {
@@ -194,6 +197,8 @@ impl DeltaLatentNet {
             Self::GatedDeltaNet(net) => latent_forward(net, x, caches, path, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(net) => latent_forward(net, x, caches, path, class),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(net) => latent_forward(net, x, caches, path, class),
         }
     }
 
@@ -212,6 +217,8 @@ impl DeltaLatentNet {
             Self::GatedDeltaNet(net) => latent_step(net, x, caches, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(net) => latent_step(net, x, caches, class),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(net) => latent_step(net, x, caches, class),
         }
     }
 
@@ -230,6 +237,8 @@ impl DeltaLatentNet {
             Self::GatedDeltaNet(net) => latent_prime(net, batch, caches, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(net) => latent_prime(net, batch, caches, class),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(net) => latent_prime(net, batch, caches, class),
         }
     }
 }
@@ -261,6 +270,14 @@ pub enum DeltaLatentNetConfig {
         shape: DeltaLatentShape,
         /// Block config.
         block: crate::delta_product::prelude::DeltaProductConfig,
+    },
+    /// Build a GDN-2 latent network.
+    #[cfg(feature = "gdn2")]
+    GatedDeltaNet2 {
+        /// Stack-level knobs.
+        shape: DeltaLatentShape,
+        /// Block config.
+        block: crate::gdn2::prelude::GatedDeltaNet2Config,
     },
 }
 
@@ -315,6 +332,10 @@ impl DeltaLatentNetConfig {
             Self::DeltaProduct { shape, block } => {
                 (block.muon_projections(), shape.stack.mlp.clone())
             }
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2 { shape, block } => {
+                (block.muon_projections(), shape.stack.mlp.clone())
+            }
         };
         burn_stack::optim::MuonPlan::new(specs).with_mlp(mlp.as_ref())
     }
@@ -333,6 +354,10 @@ impl DeltaLatentNetConfig {
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct { shape, block } => {
                 DeltaLatentNet::DeltaProduct(shape.build(block.clone()).init(device))
+            }
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2 { shape, block } => {
+                DeltaLatentNet::GatedDeltaNet2(shape.build(block.clone()).init(device))
             }
         }
     }
@@ -356,6 +381,9 @@ pub enum DeltaVocabNet {
     /// DeltaProduct language model.
     #[cfg(feature = "delta-product")]
     DeltaProduct(VocabNetwork<crate::delta_product::prelude::DeltaProduct>),
+    /// GDN-2 language model.
+    #[cfg(feature = "gdn2")]
+    GatedDeltaNet2(VocabNetwork<crate::gdn2::prelude::GatedDeltaNet2>),
 }
 
 impl DeltaVocabNet {
@@ -375,6 +403,8 @@ impl DeltaVocabNet {
             Self::GatedDeltaNet(net) => vocab_forward(net, x, caches, path, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(net) => vocab_forward(net, x, caches, path, class),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(net) => vocab_forward(net, x, caches, path, class),
         }
     }
 
@@ -392,6 +422,8 @@ impl DeltaVocabNet {
             Self::GatedDeltaNet(net) => vocab_step(net, x, caches, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(net) => vocab_step(net, x, caches, class),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(net) => vocab_step(net, x, caches, class),
         }
     }
 
@@ -410,6 +442,8 @@ impl DeltaVocabNet {
             Self::GatedDeltaNet(net) => vocab_prime(net, batch, caches, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(net) => vocab_prime(net, batch, caches, class),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(net) => vocab_prime(net, batch, caches, class),
         }
     }
 }
@@ -467,6 +501,14 @@ pub enum DeltaVocabNetConfig {
         /// Block config.
         block: crate::delta_product::prelude::DeltaProductConfig,
     },
+    /// Build a GDN-2 language model.
+    #[cfg(feature = "gdn2")]
+    GatedDeltaNet2 {
+        /// Vocabulary + stack knobs.
+        shape: DeltaVocabShape,
+        /// Block config.
+        block: crate::gdn2::prelude::GatedDeltaNet2Config,
+    },
 }
 
 impl DeltaVocabNetConfig {
@@ -487,6 +529,10 @@ impl DeltaVocabNetConfig {
             Self::DeltaProduct { shape, block } => {
                 (block.muon_projections(), shape.stack.mlp.clone())
             }
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2 { shape, block } => {
+                (block.muon_projections(), shape.stack.mlp.clone())
+            }
         };
         burn_stack::optim::MuonPlan::new(specs).with_mlp(mlp.as_ref())
     }
@@ -505,6 +551,10 @@ impl DeltaVocabNetConfig {
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct { shape, block } => {
                 DeltaVocabNet::DeltaProduct(shape.build(block.clone()).init(device))
+            }
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2 { shape, block } => {
+                DeltaVocabNet::GatedDeltaNet2(shape.build(block.clone()).init(device))
             }
         }
     }

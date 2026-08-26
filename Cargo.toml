@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["deltanet", "gated-deltanet", "delta-product", "autodiff", "optim", "backend-flex"]
-# The three block families.
+default = ["deltanet", "gated-deltanet", "delta-product", "gdn2", "autodiff", "optim", "backend-flex"]
+# The block families.
 deltanet = []
 gated-deltanet = []
 delta-product = []
+gdn2 = []
 autodiff = ["burn/autodiff", "burn-stack/autodiff"]
 # Optimizer support: Muon parameter groups over the projections.
 # Pulls `burn-optim` (which implies `burn/autodiff`).

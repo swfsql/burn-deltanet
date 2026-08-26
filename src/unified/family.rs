@@ -64,3 +64,9 @@ impl_family!(
     DeltaProduct,
     "DeltaProduct"
 );
+#[cfg(feature = "gdn2")]
+impl_family!(
+    crate::gdn2::prelude::GatedDeltaNet2,
+    GatedDeltaNet2,
+    "GDN-2"
+);

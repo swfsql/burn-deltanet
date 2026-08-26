@@ -110,6 +110,15 @@ fn every_family_builds_and_runs_through_the_runtime_enum() {
                     .with_expand_v(1.0),
             },
         ),
+        (
+            "GDN-2",
+            DeltaLatentNetConfig::GatedDeltaNet2 {
+                shape: shape(),
+                block: crate::gdn2::prelude::GatedDeltaNet2Config::new(d_model)
+                    .with_nheads(2)
+                    .with_head_k_dim(4),
+            },
+        ),
     ];
 
     for (name, config) in configs {

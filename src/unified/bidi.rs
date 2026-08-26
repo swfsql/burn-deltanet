@@ -41,6 +41,9 @@ pub enum DeltaBidiLayers {
     /// DeltaProduct bidirectional stack.
     #[cfg(feature = "delta-product")]
     DeltaProduct(BidiLayers<crate::delta_product::prelude::DeltaProduct>),
+    /// GDN-2 bidirectional stack.
+    #[cfg(feature = "gdn2")]
+    GatedDeltaNet2(BidiLayers<crate::gdn2::prelude::GatedDeltaNet2>),
 }
 
 impl DeltaBidiLayers {
@@ -60,6 +63,8 @@ impl DeltaBidiLayers {
             Self::GatedDeltaNet(layers) => bidi_forward(layers, x, caches, path, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(layers) => bidi_forward(layers, x, caches, path, class),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2(layers) => bidi_forward(layers, x, caches, path, class),
         }
     }
 }
@@ -130,6 +135,14 @@ pub enum DeltaBidiLayersConfig {
         /// Block config.
         block: crate::delta_product::prelude::DeltaProductConfig,
     },
+    /// Build a GDN-2 bidirectional stack.
+    #[cfg(feature = "gdn2")]
+    GatedDeltaNet2 {
+        /// Stack-level knobs.
+        shape: DeltaBidiShape,
+        /// Block config.
+        block: crate::gdn2::prelude::GatedDeltaNet2Config,
+    },
 }
 
 impl DeltaBidiLayersConfig {
@@ -148,6 +161,10 @@ impl DeltaBidiLayersConfig {
             Self::DeltaProduct { shape, block } => {
                 DeltaBidiLayers::DeltaProduct(shape.build(block.clone()).init(device))
             }
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2 { shape, block } => {
+                DeltaBidiLayers::GatedDeltaNet2(shape.build(block.clone()).init(device))
+            }
         }
     }
 
@@ -161,6 +178,8 @@ impl DeltaBidiLayersConfig {
             Self::GatedDeltaNet { block, .. } => block.muon_projections(),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct { block, .. } => block.muon_projections(),
+            #[cfg(feature = "gdn2")]
+            Self::GatedDeltaNet2 { block, .. } => block.muon_projections(),
         };
         burn_stack::optim::MuonPlan::new(specs)
     }

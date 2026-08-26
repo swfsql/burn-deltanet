@@ -65,6 +65,53 @@ fn delta_product_seams_match_its_projection() {
     }
 }
 
+#[test]
+fn gdn2_seams_match_its_projection() {
+    let device: Device = Default::default();
+    for n_value_heads in [0, 4] {
+        for use_gate in [true, false] {
+            let config = crate::gdn2::prelude::GatedDeltaNet2Config::new(16)
+                .with_nheads(2)
+                .with_head_k_dim(4)
+                .with_n_value_heads(n_value_heads)
+                .with_use_gate(use_gate);
+            let block = config.init(&device);
+            let [_d_model, in_proj_out] = block.qkv.in_proj.weight.dims();
+            check_seams_cover_the_weight(config.muon_projections(), in_proj_out, 16);
+        }
+    }
+}
+
+/// GDN-2 is the family with *no* per-head scalar channel: its erase, write and
+/// `Δ` maps all produce feature vectors, so every seam is Muon's. The two
+/// bottlenecks' second factors are separate weights and are claimed whole.
+#[test]
+fn gdn2_puts_every_seam_on_muon() {
+    let config = crate::gdn2::prelude::GatedDeltaNet2Config::new(16)
+        .with_nheads(2)
+        .with_head_k_dim(4);
+    let specs = config.muon_projections();
+    let in_proj = specs.iter().find(|s| s.path.contains("in_proj")).unwrap();
+    assert!(
+        in_proj.segments.iter().all(|s| s.muon),
+        "no GDN-2 in_proj segment is a per-head scalar",
+    );
+    assert_eq!(
+        vec!["q", "k", "v", "erase", "write", "dt_in", "gate_in"],
+        in_proj
+            .segments
+            .iter()
+            .map(|s| s.name)
+            .collect::<Vec<_>>(),
+    );
+    for path in ["gate.up.weight", "out_gate.weight"] {
+        assert!(
+            specs.iter().any(|s| s.path == path),
+            "{path} is a matrix Muon should own",
+        );
+    }
+}
+
 /// Per-head *scalar* channels (`β`, the forget gate's `Δ`) are deliberately
 /// left on AdamW: a `[d_model, nheads]` slice is a stack of independent linear
 /// functionals, not a matrix whose singular values mean anything.

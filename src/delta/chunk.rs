@@ -7,7 +7,7 @@
 //! `Option` so the ungated family pays for no decay tensors.
 //!
 //! The erase/write gates ride their broadcast axes (see
-//! [`DeltaInput`](super::path::DeltaInput)), so a per-head `β` and a
+//! [`DeltaInput`]), so a per-head `β` and a
 //! per-channel `(b, w)` pair run the *same* expressions here. The one place the
 //! width matters is the pair of intra-chunk score matrices: a per-head decay
 //! factors out of the key contraction into a plain `[chunk_len, chunk_len]`
