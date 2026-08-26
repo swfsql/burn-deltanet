@@ -43,11 +43,12 @@
 //!
 //! See the [`delta`](crate::delta) module header for the dimension keys.
 
-use burn::module::{Module, Param};
+use burn::module::Module;
 use burn::nn::{Initializer, Linear, LinearConfig};
 use burn::prelude::*;
-use burn_stack::modules::{sanity as san, softplus};
+use burn_stack::modules::sanity as san;
 
+use crate::common::gate::{ForgetGate, ForgetGateConfig};
 use crate::common::norm::{OutNorm, QkActivation, QkNorm};
 use crate::common::qkv::{QkvProjection, QkvProjectionConfig};
 use crate::delta::path::{DeltaInput, DeltaPath};
@@ -70,17 +71,8 @@ pub struct GatedDeltaNet {
     /// QK-norm. The trailing `extra` segment is the forget gate's `Δ`.
     pub qkv: QkvProjection,
 
-    /// Per-head bias for the discretisation step `Δ`, shape `[n_value_heads]`.
-    /// Initialised so the starting `Δ` are log-uniform over
-    /// `[dt_min, dt_max]`.
-    pub dt_bias_h: Param<Tensor<1>>,
-
-    /// Per-head `log|A|`, shape `[n_value_heads]`. The decay rate is
-    /// `A = −exp(a_log) < 0`.
-    pub a_log_h: Param<Tensor<1>>,
-
-    /// Hard clamp on `Δ` after the softplus.
-    pub dt_limit: (f64, f64),
+    /// The per-head scalar forget gate. Always present — it is the family.
+    pub gate: ForgetGate,
 
     /// Per-head output RMSNorm, gated iff the projection produces a gate.
     pub norm: OutNorm,
@@ -114,20 +106,6 @@ impl GatedDeltaNet {
     pub fn d_model(&self) -> usize {
         let [d_model, _out] = self.qkv.in_proj.weight.dims();
         d_model
-    }
-
-    /// The log forget gate `g = Δ·A ≤ 0` from the projection's raw `Δ`
-    /// channels. Shapes: `[.., n_value_heads] → [.., n_value_heads]`.
-    fn log_decay<const D: usize>(&self, dt_raw: Tensor<D>) -> Tensor<D> {
-        let nheads = self.nheads();
-        assert_eq!(nheads, dt_raw.dims()[D - 1]);
-        // Broadcast the per-head parameters over every leading axis.
-        let dt_bias: Tensor<D> = self.dt_bias_h.val().unsqueeze();
-        let a_decay: Tensor<D> = (-self.a_log_h.val().exp()).unsqueeze();
-        let dt = softplus(dt_raw + dt_bias).clamp(self.dt_limit.0, self.dt_limit.1);
-        let g = dt * a_decay;
-        san(&g);
-        g
     }
 
     /// Zero caches for `n_virtual` layers at this batch size.
@@ -185,7 +163,7 @@ impl GatedDeltaNet {
 
         let (qkv, next_conv_bwc) = self.qkv.forward(input_bsd, conv_bwc);
         let dt_raw_bsh = qkv.extra_bsx.expect("the forget-gate segment is always projected");
-        let g_bsh = self.log_decay(dt_raw_bsh);
+        let g_bsh = self.gate.log_decay(dt_raw_bsh);
         assert_eq!([batch, sequence, self.nheads()], g_bsh.dims());
 
         let (y_bshv, next_state_bhkv) = DeltaInput {
@@ -240,7 +218,7 @@ impl GatedDeltaNet {
 
         let (qkv, next_conv_bwc) = self.qkv.step(input_bd, conv_bwc);
         let dt_raw_bh = qkv.extra_bx.expect("the forget-gate segment is always projected");
-        let g_bh = self.log_decay(dt_raw_bh);
+        let g_bh = self.gate.log_decay(dt_raw_bh);
 
         // `n_householder == 1`, so the micro-step axis is a singleton here.
         let (y_bhv, next_state_bhkv) = delta_step(
@@ -411,30 +389,13 @@ impl GatedDeltaNetConfig {
         .with_has_proj_bias(self.has_proj_bias)
         .init(device);
 
-        // ── dt_bias: invert the softplus over a log-uniform spread of Δ ─────
-        // softplus⁻¹(y) = log(e^y − 1) = y + log(1 − e^{−y}), the second form
-        // being the numerically well-behaved one for small y.
-        let dt_h = Tensor::<1>::random(
-            [nheads_v],
-            burn::tensor::Distribution::Uniform(self.dt_min.ln(), self.dt_max.ln()),
-            device,
-        )
-        .exp()
-        .clamp(self.dt_init_floor, f64::INFINITY);
-        let expm1 = |t: Tensor<1>| t.exp() - 1.0;
-        let dt_bias_h = Param::from_tensor(dt_h.clone() + (-expm1(-dt_h)).log());
-
-        // ── a_log: A = −exp(a_log), so A < 0 whatever descent does ──────────
-        assert!(
-            self.a_init_range.0 >= 0.0 && self.a_init_range.0 < self.a_init_range.1,
-            "a_init_range must satisfy 0 <= lo < hi",
-        );
-        let a_h = Tensor::<1>::random(
-            [nheads_v],
-            burn::tensor::Distribution::Uniform(self.a_init_range.0, self.a_init_range.1),
-            device,
-        );
-        let a_log_h = Param::from_tensor(a_h.log());
+        let gate = ForgetGateConfig::new(nheads_v)
+            .with_a_init_range(self.a_init_range)
+            .with_dt_min(self.dt_min)
+            .with_dt_max(self.dt_max)
+            .with_dt_init_floor(self.dt_init_floor)
+            .with_dt_limit(self.dt_limit)
+            .init(device);
 
         let bound = 1.0 / (value_dim as f64).sqrt();
         let out_proj = LinearConfig::new(value_dim, self.d_model)
@@ -447,9 +408,7 @@ impl GatedDeltaNetConfig {
 
         GatedDeltaNet {
             qkv,
-            dt_bias_h,
-            a_log_h,
-            dt_limit: self.dt_limit,
+            gate,
             norm: OutNorm::init(self.head_v_dim(), self.use_gate, device),
             out_proj,
         }

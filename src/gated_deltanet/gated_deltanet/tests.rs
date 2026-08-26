@@ -188,8 +188,8 @@ fn forward_and_step_agree_on_parameter_gradients() {
         (
             block.qkv.in_proj.weight.val().grad(&grads).expect("in_proj"),
             block.out_proj.weight.val().grad(&grads).expect("out_proj"),
-            block.a_log_h.val().grad(&grads).expect("a_log"),
-            block.dt_bias_h.val().grad(&grads).expect("dt_bias"),
+            block.gate.a_log_h.val().grad(&grads).expect("a_log"),
+            block.gate.dt_bias_h.val().grad(&grads).expect("dt_bias"),
         )
     };
 
@@ -219,7 +219,7 @@ fn the_forget_gate_never_amplifies() {
         Distribution::Normal(0.0, 10.0),
         &device,
     );
-    let g = block.log_decay(dt_raw);
+    let g = block.gate.log_decay(dt_raw);
     assert!(
         g.max().into_scalar::<f32>() <= 0.0,
         "log decay must be non-positive",

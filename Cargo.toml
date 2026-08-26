@@ -8,7 +8,7 @@ default = ["deltanet", "gated-deltanet", "delta-product", "autodiff", "optim", "
 # The three block families.
 deltanet = []
 gated-deltanet = []
-delta-product = ["gated-deltanet"]
+delta-product = []
 autodiff = ["burn/autodiff", "burn-stack/autodiff"]
 # Optimizer support: Muon parameter groups over the projections.
 # Pulls `burn-optim` (which implies `burn/autodiff`).

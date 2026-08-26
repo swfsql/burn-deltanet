@@ -15,6 +15,8 @@
 
 /// The fused causal depthwise short convolution (+ its rolling window).
 pub mod conv;
+/// The scalar forget gate (Mamba-2's decay parameterisation).
+pub mod gate;
 /// Query/key activation and normalisation applied before the delta rule.
 pub mod norm;
 /// The fused `[q | k | v | β | gate]` projection front-end.
@@ -23,6 +25,7 @@ pub mod qkv;
 /// Public re-exports for the shared primitives.
 pub mod prelude {
     pub use super::conv::{ConvActivation, ShortConv, ShortConvConfig};
+    pub use super::gate::{ForgetGate, ForgetGateConfig};
     pub use super::norm::{OutNorm, QkActivation, QkNorm, l2_normalize, sum_normalize};
     pub use super::qkv::{Qkv, QkvProjection, QkvProjectionConfig, QkvStep};
 }
