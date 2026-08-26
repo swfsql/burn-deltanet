@@ -67,6 +67,29 @@
 //! [`Block`](burn_stack::modules::Block) implementations and, in [`unified`],
 //! the runtime-selectable enums that pick a family at run time.
 //!
+//! ## At a glance
+//!
+//! ```
+//! use burn::prelude::*;
+//! use burn_deltanet::prelude::*;
+//!
+//! let device = Device::default();
+//! let block = GatedDeltaNetConfig::new(64)
+//!     .with_nheads(2)
+//!     .with_head_k_dim(16)
+//!     .init(&device);
+//!
+//! // Chunkwise: training and prefill.
+//! let x = Tensor::<3>::zeros([1, 16, 64], &device);
+//! let (y, cache) = block.forward(x, None, DeltaPath::chunk());
+//! assert_eq!([1, 16, 64], y.dims());
+//!
+//! // Recurrent: decoding continues from exactly that cache.
+//! let token = Tensor::<2>::zeros([1, 64], &device);
+//! let (y_next, _cache) = block.step(token, Some(cache));
+//! assert_eq!([1, 64], y_next.dims());
+//! ```
+//!
 //! ## Two execution modes
 //!
 //! Every block, layer, and network exposes both a parallel `forward()` (used
