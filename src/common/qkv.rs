@@ -91,8 +91,12 @@ pub struct QkvProjection {
     /// Normalisation for `q`/`k`. A non-parameter constant.
     #[module(skip)]
     pub qk_norm: QkNorm,
-    /// Number of query/key heads.
+    /// Number of query/key heads — how many are *projected*.
     pub nheads: usize,
+    /// Number of value heads; a multiple of [`Self::nheads`]. Equal to it
+    /// unless the block uses grouped values, in which case `q`/`k` are
+    /// replicated up to this count.
+    pub n_value_heads: usize,
     /// Query/key width per head.
     pub head_k_dim: usize,
     /// Value width per head.
@@ -115,9 +119,21 @@ impl QkvProjection {
         self.nheads * self.head_k_dim
     }
 
-    /// `nheads · head_v_dim`.
+    /// `n_value_heads · head_v_dim`.
     pub fn value_dim(&self) -> usize {
-        self.nheads * self.head_v_dim
+        self.n_value_heads * self.head_v_dim
+    }
+
+    /// Value heads per query/key head (1 without grouped values).
+    pub fn heads_per_group(&self) -> usize {
+        self.n_value_heads / self.nheads
+    }
+
+    /// The head count everything downstream of this projection sees: the delta
+    /// rule's state, the caches, the output norm. Equals
+    /// [`Self::n_value_heads`], since `q`/`k` are replicated up to it here.
+    pub fn state_heads(&self) -> usize {
+        self.n_value_heads
     }
 
     /// Channels entering the short convolution: one `q`, then `n_householder`
@@ -130,7 +146,7 @@ impl QkvProjection {
     pub fn d_in_proj(&self) -> usize {
         self.conv_dim()
             + if self.has_beta {
-                self.n_householder * self.nheads
+                self.n_householder * self.n_value_heads
             } else {
                 0
             }
@@ -176,7 +192,7 @@ impl QkvProjection {
             ("v", self.n_householder * self.value_dim()),
         ];
         if self.has_beta {
-            segments.push(("beta", self.n_householder * self.nheads));
+            segments.push(("beta", self.n_householder * self.n_value_heads));
         }
         if self.has_gate {
             segments.push(("gate", self.value_dim()));
@@ -198,7 +214,7 @@ impl QkvProjection {
     ) -> (Tensor<D>, Option<Tensor<D>>, Option<Tensor<D>>, Option<Tensor<D>>) {
         let mut sizes = vec![self.conv_dim()];
         if self.has_beta {
-            sizes.push(self.n_householder * self.nheads);
+            sizes.push(self.n_householder * self.n_value_heads);
         }
         if self.has_gate {
             sizes.push(self.value_dim());
@@ -212,6 +228,17 @@ impl QkvProjection {
         let gate = self.has_gate.then(|| parts.next().expect("gate segment"));
         let extra = (self.extra_channels > 0).then(|| parts.next().expect("extra segment"));
         (qkv, beta, gate, extra)
+    }
+
+    /// Replicate `q`/`k` across the value heads sharing each query/key head.
+    ///
+    /// The head axis is the second-to-last; `DP1` must be `D + 1`. A no-op
+    /// (not merely cheap — the same tensor) without grouped values.
+    fn expand_to_value_heads<const D: usize, const DP1: usize>(&self, t: Tensor<D>) -> Tensor<D> {
+        if self.heads_per_group() == 1 {
+            return t;
+        }
+        burn_stack::modules::gqa_expand_to_heads::<D, DP1>(t, D - 2, self.n_value_heads)
     }
 
     /// `σ(β)`, doubled when negative eigenvalues are allowed, or `1` when the
@@ -262,9 +289,14 @@ impl QkvProjection {
             [self.key_dim(), u * self.key_dim(), u * self.value_dim()],
             2,
         );
-        let q_bshk = q_bsI.reshape([batch, sequence, nheads, head_k_dim]);
-        let k_bShk = k_bsUI.reshape([batch, sequence * u, nheads, head_k_dim]);
-        let v_bShv = v_bsUJ.reshape([batch, sequence * u, nheads, head_v_dim]);
+        let nheads_v = self.n_value_heads;
+        let q_bshk = self.expand_to_value_heads::<4, 5>(
+            q_bsI.reshape([batch, sequence, nheads, head_k_dim]),
+        );
+        let k_bShk = self.expand_to_value_heads::<4, 5>(
+            k_bsUI.reshape([batch, sequence * u, nheads, head_k_dim]),
+        );
+        let v_bShv = v_bsUJ.reshape([batch, sequence * u, nheads_v, head_v_dim]);
 
         // ── Activation (unless the convolution already applied it) ───────────
         let (q_bshk, k_bShk, v_bShv) = if self.activation_fused_into_conv() {
@@ -282,10 +314,10 @@ impl QkvProjection {
         let k_bShk = self.qk_norm.apply(k_bShk);
 
         let beta_bSh = self.squash_beta(
-            beta_raw.map(|b| b.reshape([batch, sequence * u, nheads])),
-            Tensor::zeros(Shape::new([batch, sequence * u, nheads]), &q_bshk.device()),
+            beta_raw.map(|b| b.reshape([batch, sequence * u, nheads_v])),
+            Tensor::zeros(Shape::new([batch, sequence * u, nheads_v]), &q_bshk.device()),
         );
-        let gate_bshv = gate_raw.map(|g| g.reshape([batch, sequence, nheads, head_v_dim]));
+        let gate_bshv = gate_raw.map(|g| g.reshape([batch, sequence, nheads_v, head_v_dim]));
 
         san(&q_bshk);
         san(&k_bShk);
@@ -335,9 +367,12 @@ impl QkvProjection {
             [self.key_dim(), u * self.key_dim(), u * self.value_dim()],
             1,
         );
-        let q_bhk = q_bI.reshape([batch, nheads, head_k_dim]);
-        let k_buhk = k_bUI.reshape([batch, u, nheads, head_k_dim]);
-        let v_buhv = v_bUJ.reshape([batch, u, nheads, head_v_dim]);
+        let nheads_v = self.n_value_heads;
+        let q_bhk = self
+            .expand_to_value_heads::<3, 4>(q_bI.reshape([batch, nheads, head_k_dim]));
+        let k_buhk = self
+            .expand_to_value_heads::<4, 5>(k_bUI.reshape([batch, u, nheads, head_k_dim]));
+        let v_buhv = v_bUJ.reshape([batch, u, nheads_v, head_v_dim]);
 
         let (q_bhk, k_buhk, v_buhv) = if self.activation_fused_into_conv() {
             (q_bhk, k_buhk, v_buhv)
@@ -353,10 +388,10 @@ impl QkvProjection {
         let k_buhk = self.qk_norm.apply(k_buhk);
 
         let beta_buh = self.squash_beta(
-            beta_raw.map(|b| b.reshape([batch, u, nheads])),
-            Tensor::zeros(Shape::new([batch, u, nheads]), &q_bhk.device()),
+            beta_raw.map(|b| b.reshape([batch, u, nheads_v])),
+            Tensor::zeros(Shape::new([batch, u, nheads_v]), &q_bhk.device()),
         );
-        let gate_bhv = gate_raw.map(|g| g.reshape([batch, nheads, head_v_dim]));
+        let gate_bhv = gate_raw.map(|g| g.reshape([batch, nheads_v, head_v_dim]));
 
         (
             QkvStep {
@@ -383,6 +418,10 @@ pub struct QkvProjectionConfig {
     pub head_k_dim: usize,
     /// Value width per head.
     pub head_v_dim: usize,
+    /// Number of value heads; `0` means "same as `nheads`". Must otherwise be
+    /// a multiple of `nheads` (grouped values).
+    #[config(default = 0)]
+    pub n_value_heads: usize,
     /// Delta-rule micro-steps per token.
     #[config(default = 1)]
     pub n_householder: usize,
@@ -425,6 +464,12 @@ impl QkvProjectionConfig {
         assert!(self.head_k_dim > 0 && self.head_v_dim > 0);
         assert!(self.n_householder > 0, "n_householder must be at least 1");
         assert!(
+            self.n_value_heads == 0 || self.n_value_heads % self.nheads == 0,
+            "n_value_heads ({}) must be a multiple of nheads ({})",
+            self.n_value_heads,
+            self.nheads,
+        );
+        assert!(
             self.qk_norm != QkNorm::Sum || self.qk_activation != QkActivation::Silu,
             "QkNorm::Sum needs a strictly-positive activation (Relu / EluPlusOne)",
         );
@@ -437,6 +482,11 @@ impl QkvProjectionConfig {
             qk_activation: self.qk_activation,
             qk_norm: self.qk_norm,
             nheads: self.nheads,
+            n_value_heads: if self.n_value_heads == 0 {
+                self.nheads
+            } else {
+                self.n_value_heads
+            },
             head_k_dim: self.head_k_dim,
             head_v_dim: self.head_v_dim,
             n_householder: self.n_householder,

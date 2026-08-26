@@ -406,3 +406,36 @@ fn matches_the_reference_delta_rule() {
 fn matches_the_reference_gated_delta_rule() {
     check_matches_reference(true, reference::GATED_Y, reference::GATED_STATE);
 }
+
+/// The gated recurrence *is* the ungated one at `g = 0`. That is why one
+/// implementation serves both families — and why `g: None` is only ever an
+/// optimisation, never a different function.
+#[test]
+fn a_zero_gate_is_the_ungated_delta_rule() {
+    let device: Device = Default::default();
+    let (batch, sequence, nheads, head_k_dim, head_v_dim) = (2, 12, 2, 8, 8);
+    let raw = random_raw(
+        batch, sequence, nheads, head_k_dim, head_v_dim, 0.95, false, true, &device,
+    );
+
+    let input = |g: Option<Tensor<3>>| DeltaInput {
+        q_bshk: raw.q.clone(),
+        k_bshk: raw.k.clone(),
+        v_bshv: raw.v.clone(),
+        beta_bsh: raw.beta.clone(),
+        g_bsh: g,
+        state_bhkv: raw.state.clone(),
+        scale: None,
+    };
+    let zeros = Tensor::zeros([batch, sequence, nheads], &device);
+
+    for path in [DeltaPath::Recurrent, DeltaPath::chunk_len(5)] {
+        let (y_none, state_none) = input(None).run(path);
+        let (y_zero, state_zero) = input(Some(zeros.clone())).run(path);
+        assert!(max_abs_diff(y_none, y_zero) < 1e-5, "{path:?}: outputs differ");
+        assert!(
+            max_abs_diff(state_none, state_zero) < 1e-5,
+            "{path:?}: states differ",
+        );
+    }
+}

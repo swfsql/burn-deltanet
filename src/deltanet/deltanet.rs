@@ -73,9 +73,10 @@ pub struct DeltaNet {
 }
 
 impl DeltaNet {
-    /// Number of query/key heads.
+    /// Number of heads the recurrent state carries. Equals the projected
+    /// query/key head count — DeltaNet does not group values.
     pub fn nheads(&self) -> usize {
-        self.qkv.nheads
+        self.qkv.state_heads()
     }
     /// Query/key width per head — the state's row rank.
     pub fn head_k_dim(&self) -> usize {
