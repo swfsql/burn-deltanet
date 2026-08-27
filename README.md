@@ -203,11 +203,6 @@ cargo run --release --example register-carousel --features backend-flex -- --tur
 cargo run --release --example register-carousel --features backend-flex -- --factors 1
 ```
 
-The forget gate ([Gated DeltaNet](src/gated_deltanet/)) and the decoupled
-erase/write gates ([GDN-2](src/gdn2/)) do not have examples of their own yet;
-GDN-2 appears in `register-majority` as the *control*, since it is the family
-whose erase gate can be switched off independently.
-
 ## Benchmarks
 
 ```bash

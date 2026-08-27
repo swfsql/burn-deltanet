@@ -31,7 +31,7 @@ cargo check                 # type-check the lib surface
 cargo test --lib --examples # run tests (any backend; flex = CPU default)
 cargo test --doc            # the crate header's quick-start example
 cargo doc --no-deps         # build docs — must be warning-free
-cargo run --release --example associative-recall
+cargo run --release --example register-majority
 cargo bench                 # benches/layer.rs: single-block, three modes
 ```
 
