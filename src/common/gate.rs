@@ -136,13 +136,23 @@ impl ForgetGateConfig {
 /// `in_proj` (it is a `d_model → r` map like any other); [`Self::up`] is the
 /// second.
 ///
-/// `A` stays **per head**: it sets the head's overall decay rate, while the
-/// projected `Δ` supplies the per-channel, per-token modulation.
-///
 /// ```text
-///   Δₜ = softplus(up(extraₜ) + dt_bias)     per key channel, > 0
-///   gₜ = Δₜ · (−exp(a_log))                  per head × key channel, ≤ 0
+///   gₜ = lower_bound · σ(exp(a_log) · (up(extraₜ) + dt_bias))  ∈ (lower_bound, 0)
 /// ```
+///
+/// `a_log` is **per head** — it sets how sharply that head's gate saturates —
+/// while the projected `Δ` supplies the per-channel, per-token modulation.
+///
+/// ## Why this is bounded and [`ForgetGate`] is not
+///
+/// The scalar gate's `g = softplus(Δ + dt_bias)·(−exp(a_log))` is unbounded
+/// below, and harmlessly so: the chunk path only ever forms `e^{Gᵢ−Gⱼ}` for
+/// `i ≥ j`, which is at most 1 however fast the decay is. A per-channel gate
+/// does not factor that way — [`decay`](crate::delta::decay) has to split the
+/// same quantity into `e^{Gᵢ−G_ref}·e^{G_ref−Gⱼ}`, and the second factor grows
+/// with the accumulated decay. Bounding `g` below bounds it. This is the
+/// reference's own `safe_gate` / `lower_bound` parameterisation, with the same
+/// `[-5, 0)` admissible range.
 #[derive(Module, Debug)]
 pub struct ChannelForgetGate {
     /// `bottleneck → nheads · head_k_dim`, the second half of the low-rank `Δ`
@@ -150,28 +160,28 @@ pub struct ChannelForgetGate {
     pub up: burn::nn::Linear,
     /// Per-channel bias for `Δ`, shape `[nheads · head_k_dim]`.
     pub dt_bias_i: Param<Tensor<1>>,
-    /// Per-head `log|A|`, shape `[nheads]`.
+    /// Per-head sigmoid slope, shape `[nheads]`.
     pub a_log_h: Param<Tensor<1>>,
     /// Number of heads.
     pub nheads: usize,
     /// Query/key width per head.
     pub head_k_dim: usize,
-    /// Hard clamp on `Δ` after the softplus.
-    pub dt_limit: (f64, f64),
+    /// The most negative `g` the gate can reach, in `[-5, 0)`.
+    pub lower_bound: f64,
 }
 
 impl ChannelForgetGate {
-    /// The log decay `g ≤ 0` from the bottleneck's raw channels.
+    /// The log decay `g ∈ (lower_bound, 0)` from the bottleneck's raw channels.
     ///
-    /// Shapes: `[.., bottleneck] → [.., nheads, head_k_dim]`, one leading axis
-    /// (`sequence`) or none.
+    /// Shapes: `[.., bottleneck] → [.., nheads, head_k_dim]`, with one leading
+    /// axis (`sequence`) or none.
     pub fn log_decay<const D: usize, const DP1: usize>(&self, raw: Tensor<D>) -> Tensor<DP1> {
         let dt_bias: Tensor<D> = self.dt_bias_i.val().unsqueeze();
-        let dt_i = softplus(self.up.forward(raw) + dt_bias).clamp(self.dt_limit.0, self.dt_limit.1);
+        let dt_i = self.up.forward(raw) + dt_bias;
 
-        // Split per head *before* applying `A`, so the per-head rate broadcasts
-        // over the (nheads, head_k_dim) tail rather than being materialised at
-        // `key_dim` width and reshaped straight back.
+        // Split per head *before* applying the slope, so the per-head parameter
+        // broadcasts over the (nheads, head_k_dim) tail rather than being
+        // materialised at `key_dim` width and reshaped straight back.
         let mut shape = dt_i.dims().to_vec();
         shape.pop();
         shape.extend_from_slice(&[self.nheads, self.head_k_dim]);
@@ -179,8 +189,8 @@ impl ChannelForgetGate {
             <[usize; DP1]>::try_from(shape.as_slice()).expect("DP1 == D + 1"),
         );
 
-        let a_decay_h1: Tensor<DP1> = (-self.a_log_h.val().exp()).unsqueeze_dim::<2>(1).unsqueeze();
-        let g = dt_hk * a_decay_h1;
+        let slope_h1: Tensor<DP1> = self.a_log_h.val().exp().unsqueeze_dim::<2>(1).unsqueeze();
+        let g = burn::tensor::activation::sigmoid(dt_hk * slope_h1) * self.lower_bound;
         san(&g);
         g
     }
@@ -195,8 +205,8 @@ pub struct ChannelForgetGateConfig {
     pub nheads: usize,
     /// Query/key width per head.
     pub head_k_dim: usize,
-    /// Range `[lo, hi]` for the uniform initialisation of `|A|`, stored as
-    /// `a_log = log(Uniform(lo, hi))`.
+    /// Range `[lo, hi]` for the uniform initialisation of the per-head sigmoid
+    /// slope, stored as `a_log = log(Uniform(lo, hi))`.
     #[config(default = "(1., 16.)")]
     pub a_init_range: (f64, f64),
     /// Minimum of the initial `Δ` spread.
@@ -208,25 +218,33 @@ pub struct ChannelForgetGateConfig {
     /// Floor clamped onto the sampled initial `Δ` before inverting the softplus.
     #[config(default = 1e-4)]
     pub dt_init_floor: f64,
-    /// Hard clamp on `Δ` at runtime.
-    #[config(default = "(0., 6.5504e+4)")]
-    pub dt_limit: (f64, f64),
+    /// The most negative `g` the gate can reach. Must lie in `[-5, 0)`, the
+    /// reference's own admissible range.
+    #[config(default = -5.0)]
+    pub lower_bound: f64,
 }
 
 impl ChannelForgetGateConfig {
     /// Allocate the gate on `device`.
     pub fn init(&self, device: &Device) -> ChannelForgetGate {
         assert!(
-            self.a_init_range.0 >= 0.0 && self.a_init_range.0 < self.a_init_range.1,
-            "a_init_range must satisfy 0 <= lo < hi",
+            self.a_init_range.0 > 0.0 && self.a_init_range.0 < self.a_init_range.1,
+            "a_init_range must satisfy 0 < lo < hi",
         );
         assert!(
             self.dt_min > 0.0 && self.dt_min < self.dt_max,
             "dt_min must satisfy 0 < dt_min < dt_max",
         );
+        assert!(
+            (-5.0..0.0).contains(&self.lower_bound),
+            "lower_bound must lie in [-5, 0), got {}",
+            self.lower_bound,
+        );
         let key_dim = self.nheads * self.head_k_dim;
 
-        // The `Δ` spread is per channel here, not per head.
+        // The `Δ` spread is per channel here, not per head. Inverting the
+        // softplus over a log-uniform spread starts the channels well into the
+        // sigmoid's left tail, i.e. at `α ≈ 1` — no decay until it is learned.
         let dt_i = Tensor::<1>::random(
             [key_dim],
             burn::tensor::Distribution::Uniform(self.dt_min.ln(), self.dt_max.ln()),
@@ -258,7 +276,7 @@ impl ChannelForgetGateConfig {
             a_log_h: Param::from_tensor(a_h.log()),
             nheads: self.nheads,
             head_k_dim: self.head_k_dim,
-            dt_limit: self.dt_limit,
+            lower_bound: self.lower_bound,
         }
     }
 }

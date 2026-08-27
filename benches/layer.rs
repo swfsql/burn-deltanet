@@ -9,9 +9,11 @@
 //! | `train`   | `forward` + `loss.backward()` on an autodiff device |
 //! | `step`    | one recurrent `step` from the previous step's cache (decode) |
 //!
-//! Cases cover the axes that have their own code path: the three families, the
-//! two `TriSolve` variants of the WY inverse, `Recurrent` against `Chunk`, and
-//! DeltaProduct's `n_householder`.
+//! Cases cover the axes that have their own code path: the four families, the
+//! two `TriSolve` variants of the WY inverse, `Recurrent` against `Chunk`,
+//! DeltaProduct's `n_householder`, and — for GDN-2 — the per-channel decay,
+//! whose intra-chunk score matrices go through the block-decomposed path in
+//! `delta::decay` instead of a plain `[chunk_len, chunk_len]` mask.
 //!
 //! ## Running
 //!
@@ -215,6 +217,13 @@ fn gated_config(shape: Shape) -> GatedDeltaNetConfig {
         .with_expand_v(1.0)
 }
 
+fn gdn2_config(shape: Shape) -> GatedDeltaNet2Config {
+    GatedDeltaNet2Config::new(shape.d_model)
+        .with_nheads(shape.nheads)
+        .with_head_k_dim(shape.head_k_dim)
+        .with_expand_v(1.0)
+}
+
 fn product_config(shape: Shape, n_householder: usize) -> DeltaProductConfig {
     DeltaProductConfig::new(shape.d_model)
         .with_nheads(shape.nheads)
@@ -341,6 +350,14 @@ fn bench_forward(c: &mut Criterion) {
             gated_config(shape),
             path
         );
+        forward_case!(
+            group,
+            format!("gdn2/{path_name}"),
+            shape,
+            device,
+            gdn2_config(shape),
+            path
+        );
     }
 
     // `n_householder` multiplies the core's sequence, so its cost shows up here
@@ -371,6 +388,7 @@ fn bench_train(c: &mut Criterion) {
     let path = DeltaPath::chunk_len(shape.chunk_len);
     train_case!(group, "deltanet", shape, device, deltanet_config(shape), path);
     train_case!(group, "gated", shape, device, gated_config(shape), path);
+    train_case!(group, "gdn2", shape, device, gdn2_config(shape), path);
     train_case!(
         group,
         "product-2",
@@ -409,6 +427,7 @@ fn bench_step(c: &mut Criterion) {
 
     step_case!(group, "deltanet", shape, device, deltanet_config(shape));
     step_case!(group, "gated", shape, device, gated_config(shape));
+    step_case!(group, "gdn2", shape, device, gdn2_config(shape));
     for u in [1, 2, 3] {
         step_case!(
             group,

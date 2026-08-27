@@ -148,7 +148,8 @@ fn forward_matches_step_under_a_fast_decay() {
         tiny_config(16)
             .with_a_init_range((8.0, 16.0))
             .with_dt_min(0.05)
-            .with_dt_max(0.5),
+            .with_dt_max(0.5)
+            .with_lower_bound(-5.0),
         12,
         DeltaPath::chunk_len(4),
         1e-3,
@@ -210,9 +211,10 @@ fn forward_and_step_agree_on_parameter_gradients() {
     }
 }
 
-/// `A = −exp(a_log)` is negative by construction, so `g = Δ·A ≤ 0` and the
-/// decay `α = exp(g)` can never exceed 1 — per *channel* now, but for the same
-/// reason: the state cannot grow through the gate however the parameters move.
+/// /// `g = lower_bound · σ(·)` lands in `(lower_bound, 0)` by construction, so the
+/// decay `α = exp(g)` can neither exceed 1 — the state cannot grow through the
+/// gate however the parameters move — nor run away below, which is what the
+/// chunk path's factored decay needs.
 #[test]
 fn the_forget_gate_never_amplifies() {
     let device: Device = Default::default();
@@ -229,8 +231,12 @@ fn the_forget_gate_never_amplifies() {
         "the decay is per key channel, not per head",
     );
     assert!(
-        g.max().into_scalar::<f32>() <= 0.0,
+        g.clone().max().into_scalar::<f32>() <= 0.0,
         "log decay must be non-positive",
+    );
+    assert!(
+        g.min().into_scalar::<f32>() >= block.gate.lower_bound as f32,
+        "log decay must stay above the gate's lower bound",
     );
 }
 

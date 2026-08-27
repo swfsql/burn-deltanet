@@ -38,6 +38,16 @@ use burn::prelude::*;
 /// Rows sharing one reference point. The reference kernel's `BC`.
 pub const DECAY_BLOCK_LEN: usize = 16;
 
+/// Ceiling on either factor's exponent.
+///
+/// A gate obeying [`ChannelForgetGate`](crate::common::gate::ChannelForgetGate)'s
+/// documented `[-5, 0)` bound cannot reach this over half a block
+/// (`5 · DECAY_BLOCK_LEN / 2 = 40`), so this never binds in practice. It is
+/// here so that a gate that *does* — a hand-built input, a different
+/// parameterisation — degrades into a wrong-but-finite number rather than into
+/// `inf`, which the masking downstream would turn into `NaN`.
+const MAX_EXPONENT: f64 = 48.0;
+
 /// The largest block length that divides `chunk_len` and does not exceed
 /// [`DECAY_BLOCK_LEN`]. Every chunk length in practice is a power of two, so
 /// this is [`DECAY_BLOCK_LEN`]; the fallback keeps odd lengths exact (at worst
@@ -85,6 +95,7 @@ impl BlockDecay {
         let ref_gp1k = gc_gpmk.clone().narrow(2, m / 2, 1);
 
         let row_glk = (gc_gpmk - ref_gp1k.clone())
+            .clamp_max(MAX_EXPONENT)
             .exp()
             .reshape([group, chunk_len, head_k_dim]);
 
@@ -99,7 +110,8 @@ impl BlockDecay {
             band_ppm.reshape([1, nblocks, chunk_len, 1])
         };
         let e_gplk = ref_gp1k - gc_glk.unsqueeze_dim::<4>(1);
-        let col_gplk = k_glk.unsqueeze_dim::<4>(1) * (e_gplk + band_1pl1).exp();
+        let col_gplk =
+            k_glk.unsqueeze_dim::<4>(1) * (e_gplk.clamp_max(MAX_EXPONENT) + band_1pl1).exp();
 
         Self {
             row_glk,

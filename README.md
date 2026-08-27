@@ -1,13 +1,13 @@
 # burn-deltanet
 
 > A minimal, readable reference implementation of **DeltaNet, Gated DeltaNet,
-> and DeltaProduct** for the [Burn](https://github.com/tracel-ai/burn) deep
-> learning framework.
+> DeltaProduct and GDN-2** for the [Burn](https://github.com/tracel-ai/burn)
+> deep learning framework.
 
 `burn-deltanet` ports the delta-rule family of linear-attention architectures —
 [DeltaNet](https://arxiv.org/abs/2406.06484),
-[Gated DeltaNet](https://arxiv.org/abs/2412.06464), and
-[DeltaProduct](https://arxiv.org/abs/2502.10297) — down to **standard, portable
+[Gated DeltaNet](https://arxiv.org/abs/2412.06464),
+[DeltaProduct](https://arxiv.org/abs/2502.10297) and GDN-2 — down to **standard, portable
 Burn tensor operations**. There are no custom CUDA/Triton kernels, so the exact
 same code runs on every Burn backend (CPU, WGPU, CUDA, Metal, LibTorch, …). The
 goal is clarity: a faithful, well-documented translation of the
@@ -66,10 +66,23 @@ Each family is a different answer to "how much transition do you want?":
   structure — at `u`× the recurrence work and **no extra state**. `u = 1` is
   Gated DeltaNet exactly, which the test suite asserts by running both from one
   set of weights.
+- **GDN-2** — widens the gates instead of the transition. The single `βₜ` sets
+  how much is erased *and* how much is written, so the two always move together;
+  GDN-2 projects an erase gate `bₜ ∈ ℝ^k` on the key axis and a write gate
+  `wₜ ∈ ℝ^v` on the value axis, and gives `αₜ` a value per key channel too:
+
+  ```text
+    Sₜ = (I − kₜ (bₜ ⊙ kₜ)ᵀ) diag(αₜ) Sₜ₋₁ + kₜ (wₜ ⊙ vₜ)ᵀ
+  ```
+
+  `b = w = β` with a scalar `α` is Gated DeltaNet exactly, so this is a strict
+  generalisation — but the corners a shared `β` cannot reach are the useful
+  ones: `b = 1, w = 0` deletes what a key holds, and `b = 0, w = 1` adds to it
+  without disturbing it.
 
 ## Highlights
 
-- **All three families** — as a block, and (through `burn-stack`) a Pre-LN
+- **All four families** — as a block, and (through `burn-stack`) a Pre-LN
   residual layer, a virtual-layer stack, bidirectional pairs, and full
   latent/vocabulary networks.
 - **Backend-agnostic** — pure Burn tensor ops; no custom kernels.
@@ -80,9 +93,12 @@ Each family is a different answer to "how much transition do you want?":
 - **Pinned to the reference** — the recurrence is checked numerically against
   `flash-linear-attention`'s own naive implementations at float64, not merely
   against itself.
-- **One core, three families** — the recurrence and its chunkwise WY
-  reformulation are written once; a family is a different way of *producing*
-  `(q, k, v, β, α)`.
+- **One core, four families** — the recurrence and its chunkwise WY
+  reformulation are written once, with the gates carried at their broadcast
+  width so a per-head `β` and a per-channel `(b, w)` run the same code; a family
+  is a different way of *producing* `(q, k, v, b, w, α)`.
+- **One example per family** — each isolating the one capability that family
+  adds, each with a control flag that switches it off again.
 
 ## Installation
 
@@ -96,7 +112,7 @@ A backend must be selected by feature: `backend-{flex,cpu,wgpu,webgpu,metal,`
 `vulkan,cuda,rocm,tch-cpu,tch-gpu,remote,ndarray}`. Several may be compiled in
 at once; `Device::default()` resolves which to use at runtime (honouring
 `BURN_DEVICE`). The families are features too — `deltanet`, `gated-deltanet`,
-`delta-product` — all on by default.
+`delta-product`, `gdn2` — all on by default.
 
 ## Quick start
 
@@ -172,9 +188,14 @@ parallelise it. The win is entirely intra-chunk.
 
 See [`examples/README.md`](examples/README.md).
 
+One example per family, each pairing its task with a control that turns the new
+capability off:
+
 ```bash
-# ~98% held-out associative-recall accuracy in about 80 seconds on a CPU
-cargo run --release --example associative-recall --features backend-flex
+cargo run --release --example associative-recall --features backend-flex   # the delta rule
+cargo run --release --example reset-recall       --features backend-flex   # the forget gate
+cargo run --release --example state-tracking     --features backend-flex   # Householder products
+cargo run --release --example set-and-add        --features backend-flex   # decoupled erase/write
 ```
 
 ## Benchmarks
@@ -188,9 +209,10 @@ cargo bench -- --baseline flex
 
 `benches/layer.rs` measures a single block — no layer or network wrapper — in
 all three modes (`forward`, `train`, `step`) across the families, both
-`TriSolve` variants, `Recurrent` against `Chunk`, and DeltaProduct's
-`n_householder`. Sizes come from the environment (`BENCH_SEQ`, `BENCH_D_MODEL`,
-…); see the file header.
+`TriSolve` variants, `Recurrent` against `Chunk`, DeltaProduct's
+`n_householder`, and GDN-2's per-channel decay (whose intra-chunk score matrices
+take a different route entirely). Sizes come from the environment (`BENCH_SEQ`,
+`BENCH_D_MODEL`, …); see the file header.
 
 ## Documentation
 
@@ -210,7 +232,9 @@ bidirectional pairs, networks, class tokens, schedules, the Muon plan — lives 
 family-agnostic.
 
 Not implemented: variable-length (`cu_seqlens`) packing, and the wider
-`flash-linear-attention` zoo (GLA, RWKV, Comba, KDA, …).
+`flash-linear-attention` zoo (GLA, RWKV, Comba, …). KDA is the special case of
+GDN-2 with `b = w = β`, and is reachable by feeding the core a scalar write gate
+alongside a per-channel decay.
 
 ## References
 
@@ -221,6 +245,7 @@ Not implemented: variable-length (`cu_seqlens`) packing, and the wider
 - [Gated Delta Networks: Improving Mamba2 with Delta Rule](https://arxiv.org/abs/2412.06464) — Gated DeltaNet.
 - [Unlocking State-Tracking in Linear RNNs Through Negative Eigenvalues](https://arxiv.org/abs/2411.12537) — why `β` is allowed to reach 2.
 - [DeltaProduct: Improving State-Tracking in Linear RNNs via Householder Products](https://arxiv.org/abs/2502.10297) — DeltaProduct.
+- *Gated DeltaNet-2: Decoupling Erase and Write in Linear Attention* — GDN-2 (see `fla/layers/gdn2.py` and NVlabs' reference implementation).
 
 #### Implementation references
 

@@ -362,8 +362,8 @@ pub struct GatedDeltaNet2Config {
     #[config(default = false)]
     pub conv_bias: bool,
 
-    /// Range `[lo, hi]` for the uniform initialisation of `|A|`, stored as
-    /// `a_log = log(Uniform(lo, hi))`.
+    /// Range `[lo, hi]` for the uniform initialisation of the per-head sigmoid
+    /// slope, stored as `a_log = log(Uniform(lo, hi))`.
     #[config(default = "(1., 16.)")]
     pub a_init_range: (f64, f64),
 
@@ -380,10 +380,11 @@ pub struct GatedDeltaNet2Config {
     #[config(default = 1e-4)]
     pub dt_init_floor: f64,
 
-    /// Hard clamp on `Δ` at runtime. The default only clamps at zero (the
-    /// upper bound is f16's maximum).
-    #[config(default = "(0., 6.5504e+4)")]
-    pub dt_limit: (f64, f64),
+    /// The most negative log-decay the gate may reach, in `[-5, 0)`. Unlike
+    /// the scalar families' gate this one has to be bounded below; see
+    /// [`ChannelForgetGate`].
+    #[config(default = -5.0)]
+    pub lower_bound: f64,
 
     /// Whether `in_proj`/`out_proj` carry biases.
     #[config(default = false)]
@@ -466,7 +467,7 @@ impl GatedDeltaNet2Config {
             .with_dt_min(self.dt_min)
             .with_dt_max(self.dt_max)
             .with_dt_init_floor(self.dt_init_floor)
-            .with_dt_limit(self.dt_limit)
+            .with_lower_bound(self.lower_bound)
             .init(device);
 
         let uniform = |fan_in: usize| {
