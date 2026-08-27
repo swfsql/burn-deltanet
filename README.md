@@ -97,8 +97,9 @@ Each family is a different answer to "how much transition do you want?":
   reformulation are written once, with the gates carried at their broadcast
   width so a per-head `β` and a per-channel `(b, w)` run the same code; a family
   is a different way of *producing* `(q, k, v, b, w, α)`.
-- **One example per family** — each isolating the one capability that family
-  adds, each with a control flag that switches it off again.
+- **Minimal examples with controls** — each isolating one capability of the
+  recurrence on a model small enough to write down by hand, each paired with the
+  weaker block that cannot do it.
 
 ## Installation
 
@@ -162,8 +163,8 @@ recurrence directly, one token at a time, in state-sized memory.
 
 They agree: a `forward()` over a sequence equals `step()` unrolled from the same
 cache, on outputs, on the resulting cache, and on gradients. Every block, layer
-and network asserts it, and the `associative-recall` example checks it end to
-end on a trained model.
+and network asserts it, and the `register-majority` example checks it end to end
+on a whole network.
 
 ## Choosing an algorithm
 
@@ -188,15 +189,24 @@ parallelise it. The win is entirely intra-chunk.
 
 See [`examples/README.md`](examples/README.md).
 
-One example per family, each pairing its task with a control that turns the new
-capability off:
+Two minimal examples, each pairing its task with a control that turns the new
+capability off. Both run on a six-scalar state, and both carry a hand-built
+exact solution in `tests.rs` — every weight in closed form from the recurrence:
 
 ```bash
-cargo run --release --example associative-recall --features backend-flex   # the delta rule
-cargo run --release --example reset-recall       --features backend-flex   # the forget gate
-cargo run --release --example state-tracking     --features backend-flex   # Householder products
-cargo run --release --example set-and-add        --features backend-flex   # decoupled erase/write
+# the delta rule: a keyed write that *erases*, against gated linear attention
+cargo run --release --example register-majority --features backend-flex
+
+# Householder products: a 3-cycle needs two factors, a transposition one
+cargo run --release --example register-carousel --features backend-flex
+cargo run --release --example register-carousel --features backend-flex -- --turn swap
+cargo run --release --example register-carousel --features backend-flex -- --factors 1
 ```
+
+The forget gate ([Gated DeltaNet](src/gated_deltanet/)) and the decoupled
+erase/write gates ([GDN-2](src/gdn2/)) do not have examples of their own yet;
+GDN-2 appears in `register-majority` as the *control*, since it is the family
+whose erase gate can be switched off independently.
 
 ## Benchmarks
 

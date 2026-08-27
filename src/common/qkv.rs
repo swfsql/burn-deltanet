@@ -320,9 +320,11 @@ impl QkvProjection {
     ///
     /// `σ` squashes both into `(0, 1)`; `allow_neg_eigval` doubles the **erase**
     /// gate, because `β = 2` (resp. `b = 2`) is what makes `I − k (b ⊙ k)ᵀ` an
-    /// exact reflection rather than a contraction. Under [`WriteGate::Scalar`]
-    /// the one number is both halves — including the doubling, which is what
-    /// the scalar reference does.
+    /// exact reflection rather than a contraction. Under [`WriteGate::Fixed`]
+    /// and [`WriteGate::Scalar`] the one number *is* both halves — the doubling
+    /// included, which is what the scalar reference does (`beta = beta * 2`, the
+    /// same `beta` then driving erase and write). Only [`WriteGate::Channel`]
+    /// leaves the write gate at `(0, 1)`: there the asymmetry is the point.
     ///
     /// `leading` is `[batch, sequence·n_householder]` for a sequence and
     /// `[batch, n_householder]` for a single token.
@@ -339,12 +341,15 @@ impl QkvProjection {
         let doubled = |t: Tensor<4>| if self.allow_neg_eigval { t * 2.0 } else { t };
         match raw {
             WriteRaw::Fixed => {
-                let ones = Tensor::<4>::ones(Shape::new([batch, steps, nheads_v, 1]), device);
-                (doubled(ones.clone()), ones)
+                let beta = doubled(Tensor::<4>::ones(
+                    Shape::new([batch, steps, nheads_v, 1]),
+                    device,
+                ));
+                (beta.clone(), beta)
             }
             WriteRaw::Scalar(raw) => {
-                let beta = sigmoid(raw).reshape([batch, steps, nheads_v, 1]);
-                (doubled(beta.clone()), beta)
+                let beta = doubled(sigmoid(raw).reshape([batch, steps, nheads_v, 1]));
+                (beta.clone(), beta)
             }
             WriteRaw::Channel { erase, write } => {
                 // The erase gate rides the query/key heads, so it is replicated
