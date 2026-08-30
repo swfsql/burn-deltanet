@@ -52,7 +52,7 @@ use crate::common::norm::{OutNorm, QkActivation, QkNorm};
 use crate::common::qkv::{QkvProjection, QkvProjectionConfig, WriteGate};
 use crate::delta::path::{DeltaInput, DeltaPath};
 use crate::delta::recurrent::delta_step;
-use crate::deltanet::cache::{DeltaNetCache, DeltaNetCacheConfig, DeltaNetCaches, DeltaNetCachesConfig};
+use crate::common::cache::{DeltaCache, DeltaCacheConfig, DeltaCaches, DeltaCachesConfig};
 
 // ---------------------------------------------------------------------------
 // DeltaNet  (the block)
@@ -101,10 +101,10 @@ impl DeltaNet {
     }
 
     /// Zero caches for `n_virtual` layers at this batch size.
-    pub fn zero_caches(&self, batch: usize, n_virtual: usize, device: &Device) -> DeltaNetCaches {
-        DeltaNetCachesConfig::new(
+    pub fn zero_caches(&self, batch: usize, n_virtual: usize, device: &Device) -> DeltaCaches {
+        DeltaCachesConfig::new(
             n_virtual,
-            DeltaNetCacheConfig {
+            DeltaCacheConfig {
                 batch,
                 nheads: self.nheads(),
                 head_k_dim: self.head_k_dim(),
@@ -116,8 +116,8 @@ impl DeltaNet {
         .init(device)
     }
 
-    fn zero_cache(&self, batch: usize, device: &Device) -> DeltaNetCache {
-        DeltaNetCache {
+    fn zero_cache(&self, batch: usize, device: &Device) -> DeltaCache {
+        DeltaCache {
             conv_bwc: self.qkv.zero_conv_window(batch, device),
             state_bhkv: Tensor::zeros(
                 Shape::new([batch, self.nheads(), self.head_k_dim(), self.head_v_dim()]),
@@ -134,16 +134,16 @@ impl DeltaNet {
     pub fn forward(
         &self,
         input_bsd: Tensor<3>,
-        cache: Option<DeltaNetCache>,
+        cache: Option<DeltaCache>,
         path: DeltaPath,
-    ) -> (Tensor<3>, DeltaNetCache) {
+    ) -> (Tensor<3>, DeltaCache) {
         let [batch, sequence, d_model] = input_bsd.dims();
         assert_eq!(d_model, self.d_model());
         san(&input_bsd);
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bsd.device()));
         cache.sanity();
-        let DeltaNetCache {
+        let DeltaCache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -177,7 +177,7 @@ impl DeltaNet {
 
         (
             out_bsd,
-            DeltaNetCache {
+            DeltaCache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },
@@ -192,13 +192,13 @@ impl DeltaNet {
     pub fn step(
         &self,
         input_bd: Tensor<2>,
-        cache: Option<DeltaNetCache>,
-    ) -> (Tensor<2>, DeltaNetCache) {
+        cache: Option<DeltaCache>,
+    ) -> (Tensor<2>, DeltaCache) {
         let [batch, d_model] = input_bd.dims();
         assert_eq!(d_model, self.d_model());
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bd.device()));
-        let DeltaNetCache {
+        let DeltaCache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -225,7 +225,7 @@ impl DeltaNet {
 
         (
             out_bd,
-            DeltaNetCache {
+            DeltaCache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },

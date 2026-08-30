@@ -81,6 +81,8 @@ cross-family agreement) — not listed individually. The composition layer is
 src/
 ├─ lib.rs            crate root: module decls, prelude, the quick-start doctest
 ├─ common/           the block-level pieces every family shares
+│  ├─ cache.rs       DeltaCache(s): conv window + state (bhkv) — one type for
+│  │                 all four families, one slot per virtual layer
 │  ├─ conv.rs        ShortConv: fused causal depthwise conv over [q|k|v] + window
 │  ├─ gate.rs        ForgetGate: the Mamba-2 decay parameterisation (Δ, A, dt_bias)
 │  ├─ norm.rs        QkActivation / QkNorm (L2 bounds the Householder) + OutNorm
@@ -95,24 +97,21 @@ src/
 │  ├─ tri.rs         (I − N)⁻¹ for the WY transform: Blocked | Neumann
 │  └─ tests/         path agreement + `reference.rs`, values captured from
 │                    flash-linear-attention at float64
-├─ deltanet/         DeltaNet: no forget gate (α ≡ 1)
-│  ├─ deltanet.rs    block + config (expand_k/expand_v parameterisation)
-│  └─ cache.rs       DeltaNetCache(s): conv window + state (bhkv)
-├─ gated_deltanet_1/   Gated DeltaNet: + the scalar forget gate
-│  ├─ gated_deltanet_1.rs  block + config (head_k_dim/expand_v, grouped values)
-│  └─ cache.rs       GatedDeltaNet1Cache(s)
-├─ gated_deltanet_2/   GDN-2: erase/write/decay all per channel
-│  ├─ gated_deltanet_2.rs  block + config (two low-rank bottlenecks)
-│  └─ cache.rs       GatedDeltaNet2Cache(s)
-├─ delta_product/    DeltaProduct: u Householder factors per transition
-│  ├─ delta_product.rs   block + config; q on the last micro-step, α on the first
-│  └─ cache.rs       DeltaProductCache(s) — same size as the others
+├─ deltanet/         DeltaNet: no forget gate (α ≡ 1) — block + config
+│                    (expand_k/expand_v parameterisation)
+├─ gated_deltanet_1/   Gated DeltaNet: + the scalar forget gate — block + config
+│                    (head_k_dim/expand_v, grouped values)
+├─ gated_deltanet_2/   GDN-2: erase/write/decay all per channel — block + config
+│                    (two low-rank bottlenecks)
+├─ delta_product/    DeltaProduct: u Householder factors per transition — block +
+│                    config; q on the last micro-step, α on the first
 └─ unified/          the runtime-selectable API + where the families plug in
    ├─ mod.rs         module doc carries what Muon does and does not see
-   ├─ cache.rs       DeltaCaches enum + one macro emitting Block/BlockConfig/
-   │                 CacheStack for all four families
-   ├─ family.rs      DeltaFamily: the family ↔ DeltaCaches bridge the enums use
-   ├─ network.rs     DeltaLatentNet / DeltaVocabNet (+ Configs, shared shapes)
+   ├─ cache.rs       CacheStack for DeltaCaches + one macro emitting
+   │                 Block/BlockConfig for all four families
+   ├─ block.rs       DeltaBlock/DeltaBlockConfig: the family enum, itself a Block
+   ├─ network.rs     DeltaLatentNet / DeltaVocabNet = the burn-stack containers
+   │                 at DeltaBlock (+ Configs, shared shapes, the init policy)
    ├─ bidi.rs        DeltaBidiLayers (+ Config)
    └─ tests/         burn-stack containers through real blocks: layers, network,
                      bidi, optim
@@ -139,14 +138,33 @@ All four families share **one** set of generic composition types, which live in
 VocabNetwork<M>   embedding → Layers<M> → final RMSNorm → LM head → logits
 LatentNetwork<M>  in_proj → Layers<M> → [norm_f] → out_proj (continuous I/O)
 Layers<M>         a stack of N (virtual) layers over R real weight sets
-Layer<M>          Pre-LN residual:  y = x·residual_scale + Block(RMSNorm(x))
+Layer<M>          Pre-LN sub-blocks: M(RMSNorm(x)), then the optional SwiGLU
+                  MLP over norm2 (its own inner residual); Layers adds the outer
 M (Block)         the delta-rule core — this crate
 ```
 
+The reference language models are Llama's macro architecture with the delta rule
+in place of self-attention, so a faithful stack sets `DeltaNetworkShape::mlp`
+(`GatedMlpConfig::from_hidden_ratio(d_model, 4)`) — a mixer-only stack is the
+ablation, not the default. `DeltaNetworkShape::init` likewise carries the
+reference's global init (`InitPolicy`); `None` keeps Burn's per-module defaults.
+
 A family joins the stack by implementing `burn_stack::modules::{Block,
-BlockConfig}` and `CacheStack` on its `Caches` (all four, via one macro, in
-`src/unified/cache.rs`). `Block::Options` is `DeltaPath` for every family —
-which is why the runtime enums are much smaller than `burn-mamba`'s.
+BlockConfig}` (all four, via one macro, in `src/unified/cache.rs`); `CacheStack`
+is implemented once, on the shared `DeltaCaches`.
+
+**The runtime choice lives at the block, not at the network.** All four families
+take the same `Block::Options` (`DeltaPath`) and carry the same cache, so
+`DeltaBlock` — one enum over the four, itself a `Block` — is all runtime
+selection needs: `DeltaLatentNet`/`DeltaVocabNet`/`DeltaBidiLayers` are then
+plain aliases of the generic containers at `DeltaBlock`, not per-family enums of
+their own. (`burn-mamba` cannot do this: `mamba1`/`2`/`3` carry genuinely
+different state, so its dispatch has to sit above the cache.) A statically known
+family skips the enum and names its block: `LatentNetwork<GatedDeltaNet1>`.
+
+Because the enum's variant name lands in every parameter path
+(`block.GatedDeltaNet1.qkv.in_proj.weight`), a `ProjSpec` matches its container
+and its weight as two separate substrings — see `burn-stack`'s `optim/spec.rs`.
 
 ### Dual execution modes
 

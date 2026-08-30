@@ -53,9 +53,7 @@ use crate::common::norm::{OutNorm, QkActivation, QkNorm};
 use crate::common::qkv::{QkvProjection, QkvProjectionConfig, WriteGate};
 use crate::delta::path::{DeltaInput, DeltaPath};
 use crate::delta::recurrent::delta_step;
-use crate::gated_deltanet_1::cache::{
-    GatedDeltaNet1Cache, GatedDeltaNet1CacheConfig, GatedDeltaNet1Caches, GatedDeltaNet1CachesConfig,
-};
+use crate::common::cache::{DeltaCache, DeltaCacheConfig, DeltaCaches, DeltaCachesConfig};
 
 // ---------------------------------------------------------------------------
 // GatedDeltaNet1  (the block)
@@ -114,10 +112,10 @@ impl GatedDeltaNet1 {
         batch: usize,
         n_virtual: usize,
         device: &Device,
-    ) -> GatedDeltaNet1Caches {
-        GatedDeltaNet1CachesConfig::new(
+    ) -> DeltaCaches {
+        DeltaCachesConfig::new(
             n_virtual,
-            GatedDeltaNet1CacheConfig {
+            DeltaCacheConfig {
                 batch,
                 nheads: self.nheads(),
                 head_k_dim: self.head_k_dim(),
@@ -129,8 +127,8 @@ impl GatedDeltaNet1 {
         .init(device)
     }
 
-    fn zero_cache(&self, batch: usize, device: &Device) -> GatedDeltaNet1Cache {
-        GatedDeltaNet1Cache {
+    fn zero_cache(&self, batch: usize, device: &Device) -> DeltaCache {
+        DeltaCache {
             conv_bwc: self.qkv.zero_conv_window(batch, device),
             state_bhkv: Tensor::zeros(
                 Shape::new([batch, self.nheads(), self.head_k_dim(), self.head_v_dim()]),
@@ -147,16 +145,16 @@ impl GatedDeltaNet1 {
     pub fn forward(
         &self,
         input_bsd: Tensor<3>,
-        cache: Option<GatedDeltaNet1Cache>,
+        cache: Option<DeltaCache>,
         path: DeltaPath,
-    ) -> (Tensor<3>, GatedDeltaNet1Cache) {
+    ) -> (Tensor<3>, DeltaCache) {
         let [batch, sequence, d_model] = input_bsd.dims();
         assert_eq!(d_model, self.d_model());
         san(&input_bsd);
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bsd.device()));
         cache.sanity();
-        let GatedDeltaNet1Cache {
+        let DeltaCache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -191,7 +189,7 @@ impl GatedDeltaNet1 {
 
         (
             out_bsd,
-            GatedDeltaNet1Cache {
+            DeltaCache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },
@@ -206,13 +204,13 @@ impl GatedDeltaNet1 {
     pub fn step(
         &self,
         input_bd: Tensor<2>,
-        cache: Option<GatedDeltaNet1Cache>,
-    ) -> (Tensor<2>, GatedDeltaNet1Cache) {
+        cache: Option<DeltaCache>,
+    ) -> (Tensor<2>, DeltaCache) {
         let [batch, d_model] = input_bd.dims();
         assert_eq!(d_model, self.d_model());
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bd.device()));
-        let GatedDeltaNet1Cache {
+        let DeltaCache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -242,7 +240,7 @@ impl GatedDeltaNet1 {
 
         (
             out_bd,
-            GatedDeltaNet1Cache {
+            DeltaCache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },

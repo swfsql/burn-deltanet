@@ -9,21 +9,16 @@
 //! recurrence they all share.
 //!
 //! - [`gated_deltanet_2`] — the block and its config.
-//! - [`cache`] — the convolution window + recurrent state carried between
-//!   calls.
 //!
-//! The residual layer, the layer stack, the language model and the
-//! bidirectional wrappers are the family-generic types in
-//! [`burn_stack::modules`], reached through [`crate::unified`].
+//! The convolution window + recurrent state carried between calls is the
+//! shared [`DeltaCache`](crate::common::cache::DeltaCache); the residual layer,
+//! the layer stack, the language model and the bidirectional wrappers are the
+//! family-generic types in [`burn_stack::modules`], reached through
+//! [`crate::unified`].
 
-pub mod cache;
 pub mod gated_deltanet_2;
 
 /// Public re-exports for GDN-2.
 pub mod prelude {
-    pub use super::cache::{
-        GatedDeltaNet2Cache, GatedDeltaNet2CacheConfig, GatedDeltaNet2Caches,
-        GatedDeltaNet2CachesConfig,
-    };
     pub use super::gated_deltanet_2::{GatedDeltaNet2, GatedDeltaNet2Config};
 }

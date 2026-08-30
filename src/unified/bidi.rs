@@ -1,5 +1,5 @@
-//! Runtime-selectable bidirectional stacks: one enum over the three families'
-//! [`BidiLayers`] monomorphisations.
+//! Bidirectional stacks: `burn-stack`'s [`BidiLayers`] at [`DeltaBlock`], plus
+//! the serialisable config that builds one.
 //!
 //! A bidirectional pair runs the same block straight (→) and reversed (← via
 //! `flip`), merging the two passes per pair. That is a *non-causal* reading of
@@ -7,69 +7,21 @@
 //! token by token, because its state depends on tokens not yet seen. Encoders
 //! and classifiers want this; generators do not.
 //!
-//! As in [`network`](super::network), the arms are one line each — see that
-//! module's header for why.
+//! As in [`network`](super::network), the family is chosen inside the block, so
+//! this is an alias rather than an enum.
 
 use burn::prelude::*;
-use burn_stack::modules::{BidiLayers, BidiLayersBuilder, OutputMergeConfig, ResidualsConfig};
-use burn_stack::utils::{BidiSchedule, ClassCursors, ClassLatent};
+use burn_stack::modules::{
+    BidiLayers, BidiLayersBuilder, BlockConfig, OutputMergeConfig, ResidualsConfig,
+};
+use burn_stack::utils::{BidiSchedule, ClassLatent};
 
-use crate::delta::path::DeltaPath;
-use crate::unified::cache::DeltaCaches;
-use crate::unified::family::DeltaFamily;
+use crate::unified::block::{DeltaBlock, DeltaBlockConfig};
 
-fn bidi_forward<M: DeltaFamily>(
-    layers: &BidiLayers<M>,
-    x: Tensor<3>,
-    caches: Option<DeltaCaches>,
-    path: DeltaPath,
-    class: Option<&mut ClassCursors>,
-) -> (Tensor<3>, DeltaCaches) {
-    let (y, caches) = layers.forward(x, caches.map(M::unwrap_caches), path, class);
-    (y, M::wrap_caches(caches))
-}
+/// A bidirectional layer stack over any delta-rule family.
+pub type DeltaBidiLayers = BidiLayers<DeltaBlock>;
 
-/// A runtime-selectable bidirectional layer stack.
-#[derive(Module, Debug)]
-pub enum DeltaBidiLayers {
-    /// DeltaNet bidirectional stack.
-    #[cfg(feature = "deltanet")]
-    DeltaNet(BidiLayers<crate::deltanet::prelude::DeltaNet>),
-    /// Gated DeltaNet bidirectional stack.
-    #[cfg(feature = "gated-deltanet-1")]
-    GatedDeltaNet1(BidiLayers<crate::gated_deltanet_1::prelude::GatedDeltaNet1>),
-    /// DeltaProduct bidirectional stack.
-    #[cfg(feature = "delta-product")]
-    DeltaProduct(BidiLayers<crate::delta_product::prelude::DeltaProduct>),
-    /// GDN-2 bidirectional stack.
-    #[cfg(feature = "gated-deltanet-2")]
-    GatedDeltaNet2(BidiLayers<crate::gated_deltanet_2::prelude::GatedDeltaNet2>),
-}
-
-impl DeltaBidiLayers {
-    /// Full-sequence pass. The caches must belong to this stack's family; a
-    /// mismatch is a caller error and panics.
-    pub fn forward(
-        &self,
-        x: Tensor<3>,
-        caches: Option<DeltaCaches>,
-        path: DeltaPath,
-        class: Option<&mut ClassCursors>,
-    ) -> (Tensor<3>, DeltaCaches) {
-        match self {
-            #[cfg(feature = "deltanet")]
-            Self::DeltaNet(layers) => bidi_forward(layers, x, caches, path, class),
-            #[cfg(feature = "gated-deltanet-1")]
-            Self::GatedDeltaNet1(layers) => bidi_forward(layers, x, caches, path, class),
-            #[cfg(feature = "delta-product")]
-            Self::DeltaProduct(layers) => bidi_forward(layers, x, caches, path, class),
-            #[cfg(feature = "gated-deltanet-2")]
-            Self::GatedDeltaNet2(layers) => bidi_forward(layers, x, caches, path, class),
-        }
-    }
-}
-
-/// The family-independent knobs of a bidirectional stack.
+/// The block-independent knobs of a bidirectional stack.
 #[derive(Config, Debug)]
 pub struct DeltaBidiShape {
     /// Number of real (weight-bearing) layers. Must be even — they pair up.
@@ -94,7 +46,9 @@ pub struct DeltaBidiShape {
 }
 
 impl DeltaBidiShape {
-    fn build<C: burn_stack::modules::BlockConfig>(&self, block: C) -> BidiLayersBuilder<C> {
+    /// The builder for this shape around a given block config — the entry point
+    /// for a statically named family.
+    pub fn build<C: BlockConfig>(&self, block: C) -> BidiLayersBuilder<C> {
         BidiLayersBuilder {
             n_real_layers: self.n_real_layers,
             n_virtual_layers: self.n_virtual_layers.clone(),
@@ -110,77 +64,22 @@ impl DeltaBidiShape {
 
 /// Config for [`DeltaBidiLayers`].
 #[derive(Config, Debug)]
-pub enum DeltaBidiLayersConfig {
-    /// Build a DeltaNet bidirectional stack.
-    #[cfg(feature = "deltanet")]
-    DeltaNet {
-        /// Stack-level knobs.
-        shape: DeltaBidiShape,
-        /// Block config.
-        block: crate::deltanet::prelude::DeltaNetConfig,
-    },
-    /// Build a Gated DeltaNet bidirectional stack.
-    #[cfg(feature = "gated-deltanet-1")]
-    GatedDeltaNet1 {
-        /// Stack-level knobs.
-        shape: DeltaBidiShape,
-        /// Block config.
-        block: crate::gated_deltanet_1::prelude::GatedDeltaNet1Config,
-    },
-    /// Build a DeltaProduct bidirectional stack.
-    #[cfg(feature = "delta-product")]
-    DeltaProduct {
-        /// Stack-level knobs.
-        shape: DeltaBidiShape,
-        /// Block config.
-        block: crate::delta_product::prelude::DeltaProductConfig,
-    },
-    /// Build a GDN-2 bidirectional stack.
-    #[cfg(feature = "gated-deltanet-2")]
-    GatedDeltaNet2 {
-        /// Stack-level knobs.
-        shape: DeltaBidiShape,
-        /// Block config.
-        block: crate::gated_deltanet_2::prelude::GatedDeltaNet2Config,
-    },
+pub struct DeltaBidiLayersConfig {
+    /// Stack-level knobs.
+    pub shape: DeltaBidiShape,
+    /// Block config — this is where the family is chosen.
+    pub block: DeltaBlockConfig,
 }
 
 impl DeltaBidiLayersConfig {
-    /// Allocate and initialise the selected stack on `device`.
+    /// Allocate and initialise the stack on `device`.
     pub fn init(&self, device: &Device) -> DeltaBidiLayers {
-        match self {
-            #[cfg(feature = "deltanet")]
-            Self::DeltaNet { shape, block } => {
-                DeltaBidiLayers::DeltaNet(shape.build(block.clone()).init(device))
-            }
-            #[cfg(feature = "gated-deltanet-1")]
-            Self::GatedDeltaNet1 { shape, block } => {
-                DeltaBidiLayers::GatedDeltaNet1(shape.build(block.clone()).init(device))
-            }
-            #[cfg(feature = "delta-product")]
-            Self::DeltaProduct { shape, block } => {
-                DeltaBidiLayers::DeltaProduct(shape.build(block.clone()).init(device))
-            }
-            #[cfg(feature = "gated-deltanet-2")]
-            Self::GatedDeltaNet2 { shape, block } => {
-                DeltaBidiLayers::GatedDeltaNet2(shape.build(block.clone()).init(device))
-            }
-        }
+        self.shape.build(self.block.clone()).init(device)
     }
 
     /// The [`MuonPlan`](burn_stack::optim::MuonPlan) for this stack.
     #[cfg(feature = "optim")]
     pub fn muon_plan(&self) -> burn_stack::optim::MuonPlan {
-        let specs = match self {
-            #[cfg(feature = "deltanet")]
-            Self::DeltaNet { block, .. } => block.muon_projections(),
-            #[cfg(feature = "gated-deltanet-1")]
-            Self::GatedDeltaNet1 { block, .. } => block.muon_projections(),
-            #[cfg(feature = "delta-product")]
-            Self::DeltaProduct { block, .. } => block.muon_projections(),
-            #[cfg(feature = "gated-deltanet-2")]
-            Self::GatedDeltaNet2 { block, .. } => block.muon_projections(),
-        };
-        burn_stack::optim::MuonPlan::new(specs)
+        burn_stack::optim::MuonPlan::new(self.block.muon_projections())
     }
 }

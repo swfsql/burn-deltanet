@@ -1,6 +1,6 @@
 //! # The runtime-selectable API
 //!
-//! Two things live here:
+//! Three things live here:
 //!
 //! - **Where the families plug in** ([`cache`]): the
 //!   [`Block`](burn_stack::modules::Block) /
@@ -9,11 +9,17 @@
 //!   to the generic containers in [`burn_stack`]. Once those exist, every
 //!   container — the Pre-LN layer, the virtual-layer stack, bidirectional
 //!   pairs, latent/vocab networks, multi-gate residuals, class tokens, the Muon
-//!   plan — applies to all three families unchanged.
-//! - **Runtime dispatch** ([`network`], [`bidi`]): enums that pick a family at
-//!   *construction* time rather than compile time, for callers that read the
-//!   choice out of a config file. They wrap the generic containers; they do not
-//!   reimplement them.
+//!   plan — applies to all four families unchanged.
+//! - **Runtime dispatch** ([`block`]): [`DeltaBlock`], one enum over the four
+//!   families that is itself a `Block`. The families agree on their cache
+//!   ([`DeltaCaches`](crate::common::cache::DeltaCaches)), their options
+//!   ([`DeltaPath`](crate::delta::path::DeltaPath)) and their interface, so the
+//!   choice is made *inside* the block and no container above it has anything
+//!   left to dispatch.
+//! - **The networks** ([`network`], [`bidi`]): aliases of the generic
+//!   containers at [`DeltaBlock`], plus the serialisable configs that build
+//!   them. A statically known family skips the enum entirely and names its
+//!   block — `LatentNetwork<GatedDeltaNet1>`.
 //!
 //! ## What Muon sees
 //!
@@ -34,8 +40,8 @@
 //!   maps is listed separately — orthogonalising the `u` of them jointly would
 //!   couple Householder factors that are meant to be chosen independently.
 
+pub mod block;
 pub mod cache;
-pub mod family;
 pub mod bidi;
 pub mod network;
 
@@ -51,8 +57,7 @@ pub mod network;
 ))]
 mod tests;
 
-pub use cache::DeltaCaches;
-pub use family::DeltaFamily;
+pub use block::{DeltaBlock, DeltaBlockConfig};
 pub use bidi::{DeltaBidiLayers, DeltaBidiLayersConfig, DeltaBidiShape};
 pub use network::{
     DeltaLatentNet, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape, DeltaVocabNet,

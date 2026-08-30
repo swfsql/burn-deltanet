@@ -2,7 +2,9 @@
 //! with the weight the forward built, and that the right channels are excluded.
 
 use super::*;
-use crate::unified::{DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape};
+use crate::unified::{
+    DeltaBlockConfig, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape,
+};
 use burn_stack::optim::ProjSpec;
 
 /// The seams a family declares must sum to its real `in_proj` width. This is
@@ -159,15 +161,23 @@ fn delta_product_lists_each_householder_map_separately() {
 #[test]
 fn the_plan_describes_a_built_network() {
     let device: Device = Default::default();
-    let config = DeltaLatentNetConfig::GatedDeltaNet1 {
-        shape: DeltaLatentShape::new(5, 5, DeltaNetworkShape::new(2)),
-        block: tiny_block(16),
-    };
+    let config = DeltaLatentNetConfig::new(
+        DeltaLatentShape::new(5, 5, DeltaNetworkShape::new(2)),
+        DeltaBlockConfig::GatedDeltaNet1(tiny_block(16)),
+    );
     let net = config.init(&device);
     let report = config.muon_plan().describe(&net);
 
     assert!(report.contains("qkv.in_proj.weight"), "{report}");
     assert!(report.contains("muon"), "{report}");
+    // The block is an enum, so its variant sits in the parameter path between
+    // the container and the weight — which is why a `ProjSpec` matches the two
+    // as separate substrings. A spec matching `"block.qkv.in_proj.weight"` as
+    // one string would find nothing here, silently.
+    assert!(
+        report.contains("block.GatedDeltaNet1.qkv.in_proj.weight"),
+        "{report}",
+    );
     // The network's own boundary projections are not the block's.
     assert!(
         report

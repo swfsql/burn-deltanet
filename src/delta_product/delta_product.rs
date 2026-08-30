@@ -63,9 +63,7 @@ use crate::common::gate::{ForgetGate, ForgetGateConfig};
 use crate::common::norm::{OutNorm, QkActivation, QkNorm};
 use crate::common::qkv::{QkvProjection, QkvProjectionConfig, WriteGate};
 use crate::delta::path::{DeltaInput, DeltaPath};
-use crate::delta_product::cache::{
-    DeltaProductCache, DeltaProductCacheConfig, DeltaProductCaches, DeltaProductCachesConfig,
-};
+use crate::common::cache::{DeltaCache, DeltaCacheConfig, DeltaCaches, DeltaCachesConfig};
 
 // ---------------------------------------------------------------------------
 // DeltaProduct  (the block)
@@ -124,10 +122,10 @@ impl DeltaProduct {
     ///
     /// The state is the same size as any other family's: `u` buys transition
     /// expressiveness, not memory.
-    pub fn zero_caches(&self, batch: usize, n_virtual: usize, device: &Device) -> DeltaProductCaches {
-        DeltaProductCachesConfig::new(
+    pub fn zero_caches(&self, batch: usize, n_virtual: usize, device: &Device) -> DeltaCaches {
+        DeltaCachesConfig::new(
             n_virtual,
-            DeltaProductCacheConfig {
+            DeltaCacheConfig {
                 batch,
                 nheads: self.nheads(),
                 head_k_dim: self.head_k_dim(),
@@ -139,8 +137,8 @@ impl DeltaProduct {
         .init(device)
     }
 
-    fn zero_cache(&self, batch: usize, device: &Device) -> DeltaProductCache {
-        DeltaProductCache {
+    fn zero_cache(&self, batch: usize, device: &Device) -> DeltaCache {
+        DeltaCache {
             conv_bwc: self.qkv.zero_conv_window(batch, device),
             state_bhkv: Tensor::zeros(
                 Shape::new([batch, self.nheads(), self.head_k_dim(), self.head_v_dim()]),
@@ -159,9 +157,9 @@ impl DeltaProduct {
     pub fn forward(
         &self,
         input_bsd: Tensor<3>,
-        cache: Option<DeltaProductCache>,
+        cache: Option<DeltaCache>,
         path: DeltaPath,
-    ) -> (Tensor<3>, DeltaProductCache) {
+    ) -> (Tensor<3>, DeltaCache) {
         let [batch, sequence, d_model] = input_bsd.dims();
         assert_eq!(d_model, self.d_model());
         let (u, nheads, head_v_dim) = (self.n_householder(), self.nheads(), self.head_v_dim());
@@ -169,7 +167,7 @@ impl DeltaProduct {
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bsd.device()));
         cache.sanity();
-        let DeltaProductCache {
+        let DeltaCache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -238,7 +236,7 @@ impl DeltaProduct {
 
         (
             out_bsd,
-            DeltaProductCache {
+            DeltaCache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },
@@ -254,14 +252,14 @@ impl DeltaProduct {
     pub fn step(
         &self,
         input_bd: Tensor<2>,
-        cache: Option<DeltaProductCache>,
-    ) -> (Tensor<2>, DeltaProductCache) {
+        cache: Option<DeltaCache>,
+    ) -> (Tensor<2>, DeltaCache) {
         let [batch, d_model] = input_bd.dims();
         assert_eq!(d_model, self.d_model());
         let (u, nheads) = (self.n_householder(), self.nheads());
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bd.device()));
-        let DeltaProductCache {
+        let DeltaCache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -314,7 +312,7 @@ impl DeltaProduct {
 
         (
             out_bd,
-            DeltaProductCache {
+            DeltaCache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },

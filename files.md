@@ -22,6 +22,20 @@ Module declarations carry **no** outer `///` docs — see the rustdoc gotcha in
 
 ## `src/common/` — the block-level pieces every family shares
 
+### `cache.rs`
+- `DeltaCache { conv_bwc: Option<Tensor<3>>, state_bhkv: Tensor<4> }` +
+  `from_parts`, `sanity()`; `DeltaCacheConfig` (batch, nheads, head_k_dim,
+  head_v_dim, conv_dim, conv_kernel) → zero-initialised tensors.
+- `DeltaCaches { caches: Vec<DeltaCache> }` + `caches_len`, `from_vec`,
+  `into_options`/`from_options`; `DeltaCachesConfig { n_caches, cache }`.
+
+**One cache type for all four families.** They differ in what they *project* —
+a scalar `β`, a per-head gate, per-channel erase/write gates, `u` Householder
+factors — and every one of those is computed from the current token and consumed
+within the step. What crosses a step boundary is the same window and the same
+associative memory. This is what lets `DeltaBlock` dispatch a family at runtime
+with no cache tag, and `CacheStack` be implemented once.
+
 ### `conv.rs`
 - `ConvActivation { Silu, Identity }` — a `#[module(skip)]` constant.
 - `ShortConv { conv1d, activation }`, `ShortConvConfig`.
@@ -160,11 +174,8 @@ rather than only a self-consistency check.
 
 ## The four families
 
-Each is `<family>.rs` (block + config) plus `cache.rs`, and each cache is the
-same two fields: `conv_bwc: Option<Tensor<3>>` and
-`state_bhkv: Tensor<4>` (`[batch, nheads, head_k_dim, head_v_dim]`), with
-`from_parts` for the by-hand `CacheStack` conversion, `sanity()`, and the
-`*Caches`/`*CachesConfig` collection.
+Each is one file, `<family>.rs` (block + config); the state they carry between
+calls is the shared `DeltaCache` (see `src/common/cache.rs`).
 
 Every block exposes `forward(x_bsd, cache, path)`, `step(x_bd, cache)`,
 `zero_caches(batch, n_virtual, device)`, and the dimension accessors
@@ -217,30 +228,36 @@ Module header: what the runtime enums are for, and what Muon does and does not
 see. Declares the submodules and re-exports.
 
 ### `cache.rs`
-- `DeltaCaches { DeltaNet, GatedDeltaNet1, GatedDeltaNet2, DeltaProduct }` (plain
-  runtime state, not a `Module`) + `family_name()`, `slot_count()`.
-- `impl_block_for_family!` — one macro emitting `CacheStack`, `Block` and
-  `BlockConfig` for all four families. They differ in what they *project*, not
-  in what they *carry*, so the wiring is the same text four times over.
-- `cache_to_inner`/`cache_from_inner` are spelled out field by field:
+- `impl CacheStack for DeltaCaches` — once, for every family.
+  `cache_to_inner`/`cache_from_inner` are spelled out field by field:
   `Module::map` is a no-op on the bare `Tensor`s a cache holds.
+- `impl_block_for_family!` — one macro emitting `Block` + `BlockConfig` for all
+  four families; the bodies are the same text four times over.
 
-### `family.rs`
-- `DeltaFamily: Block<Options = DeltaPath>` — `NAME`, `wrap_caches`,
-  `unwrap_caches` (panics on a family mismatch, which runtime selection cannot
-  check at compile time).
+### `block.rs`
+- `DeltaBlock` (a `Module` enum over the four family blocks) + `impl Block`;
+  `family_name`, `d_model`/`nheads`/`head_k_dim`/`head_v_dim`, `forward`,
+  `step`, `zero_caches`.
+- `DeltaBlockConfig` (a `Config` enum over the four family configs) +
+  `impl BlockConfig`; `init`, `d_model`, `muon_projections`.
 
-This is what keeps `network.rs`/`bidi.rs` to one line per family: the real
-bodies are generic functions over `DeltaFamily`.
+The families agree on their cache, their options (`DeltaPath`) and their
+interface, so a runtime choice fits *inside* the block and every container above
+it is used as-is. The enum's variant name enters the parameter paths, which is
+why a `ProjSpec` matches container and weight separately.
 
 ### `network.rs`
-- `DeltaNetworkShape` — the family-independent stack knobs (real/virtual layers,
-  `grad_horizon`, class latents, residuals, mlp), shared by both networks.
-- `DeltaLatentShape` / `DeltaVocabShape` — each network's own knobs on top.
-- `DeltaLatentNet` / `DeltaVocabNet` (+ `*Config` enums): `forward`, `step`,
-  `prime`, `init`, `muon_plan`.
-- Private generics `latent_forward`/`latent_step`/`latent_prime`/`vocab_*` that
-  every arm delegates to.
+- `DeltaNetworkShape` — the block-independent stack knobs (real/virtual layers,
+  `grad_horizon`, class latents, residuals, mlp, init), shared by both networks;
+  `layers()` builds the `LayersBuilder`.
+- `DeltaLatentShape` / `DeltaVocabShape` — each network's own knobs on top, with
+  a `build<C: BlockConfig>` that any statically named family can use too.
+- `DeltaLatentNet` / `DeltaVocabNet` — aliases of `burn-stack`'s
+  `LatentNetwork`/`VocabNetwork` at `DeltaBlock`; `DeltaLatentNetConfig` /
+  `DeltaVocabNetConfig` (`{ shape, block }`) carry `init` + `muon_plan`.
+- `init()` applies `DeltaNetworkShape::init` (an `InitPolicy`) after building,
+  filling in the residual depth the policy cannot know: layers × branches per
+  layer (2 with an MLP, 1 without).
 - A trailing `mod model_config_ext` implements `burn_stack::modules::
   ModelConfigExt` (`init` + `muon_plan`) for both configs, forwarding to the
   inherent methods. It has to live in the lib: the trait is `burn-stack`'s and
@@ -250,13 +267,14 @@ bodies are generic functions over `DeltaFamily`.
 suffix length.
 
 ### `bidi.rs`
-- `DeltaBidiShape`, `DeltaBidiLayers` (+ `Config`): `forward`, `init`,
-  `muon_plan`. No `step` — the reversed pass is non-causal.
+- `DeltaBidiShape` (+ `build`), `DeltaBidiLayers` = `BidiLayers<DeltaBlock>`,
+  `DeltaBidiLayersConfig` (`init`, `muon_plan`). No `step` — the reversed pass
+  is non-causal.
 
 ### `tests/`
 `layers.rs` (stack parity, virtual layers, MLP, multi-gate, `grad_horizon`,
 split forward), `network.rs` (latent/vocab parity, every family through the
-enum, the mismatch panic), `bidi.rs` (shapes, and that the first output moves
+block enum), `bidi.rs` (shapes, and that the first output moves
 when the *last* token changes), `optim.rs` (declared seams cover the real
 projection; per-head scalars excluded; DeltaProduct's `u` maps listed
 separately).

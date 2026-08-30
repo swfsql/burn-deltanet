@@ -27,8 +27,8 @@ fn random_input(batch: usize, sequence: usize, d_model: usize, device: &Device) 
 fn unroll_steps(
     block: &GatedDeltaNet2,
     input_bsd: Tensor<3>,
-    cache: Option<GatedDeltaNet2Cache>,
-) -> (Tensor<3>, GatedDeltaNet2Cache) {
+    cache: Option<DeltaCache>,
+) -> (Tensor<3>, DeltaCache) {
     let [_batch, sequence, _d_model] = input_bsd.dims();
     let mut cache = cache;
     let mut outputs = Vec::with_capacity(sequence);
@@ -42,8 +42,8 @@ fn unroll_steps(
 }
 
 fn assert_caches_match(
-    a: &GatedDeltaNet2Cache,
-    b: &GatedDeltaNet2Cache,
+    a: &DeltaCache,
+    b: &DeltaCache,
     label: &str,
     tol: f32,
 ) {

@@ -284,14 +284,13 @@ fn set_out_norm(norm: &mut OutNorm, device: &Device) {
 fn handmade(device: &Device) -> DeltaLatentNet {
     let cfg = crate::model::model_config();
     let mut model = ModelConfigExt::init(&cfg, device);
-    let DeltaLatentNet::DeltaNet(net) = &mut model else {
+    wire_boundary(&mut model.in_proj, &mut model.out_proj, device);
+
+    let layer = &mut model.layers.real_layers[0];
+    layer.norm.gamma = Param::from_tensor(Tensor::ones(Shape::new([D_MODEL]), device));
+    let DeltaBlock::DeltaNet(block) = &mut layer.block else {
         unreachable!("register-majority configures the DeltaNet variant")
     };
-    wire_boundary(&mut net.in_proj, &mut net.out_proj, device);
-
-    let layer = &mut net.layers.real_layers[0];
-    layer.norm.gamma = Param::from_tensor(Tensor::ones(Shape::new([D_MODEL]), device));
-    let block = &mut layer.block;
 
     // in_proj columns are `[q(3) | k(3) | v(2) | β(1)]` — see
     // `QkvProjection::segments()`. `qk_activation = Identity` here, so `q`/`k`
@@ -344,24 +343,23 @@ fn accumulator(device: &Device, alpha: f64) -> DeltaLatentNet {
         .with_use_short_conv(false)
         .with_lower_bound(LOWER_BOUND)
         .with_has_proj_bias(true);
-    let cfg = DeltaLatentNetConfig::GatedDeltaNet2 {
-        shape: DeltaLatentShape::new(
+    let cfg = DeltaLatentNetConfig::new(
+        DeltaLatentShape::new(
             NUM_SYMBOLS,
             NUM_CLASSES,
             DeltaNetworkShape::new(1).with_ignore_last_residual(true),
         )
         .with_final_norm(false),
-        block: block_cfg,
-    };
+        DeltaBlockConfig::GatedDeltaNet2(block_cfg),
+    );
     let mut model = ModelConfigExt::init(&cfg, device);
-    let DeltaLatentNet::GatedDeltaNet2(net) = &mut model else {
+    wire_boundary(&mut model.in_proj, &mut model.out_proj, device);
+
+    let layer = &mut model.layers.real_layers[0];
+    layer.norm.gamma = Param::from_tensor(Tensor::ones(Shape::new([D_MODEL]), device));
+    let DeltaBlock::GatedDeltaNet2(block) = &mut layer.block else {
         unreachable!("the baseline is the GDN-2 variant")
     };
-    wire_boundary(&mut net.in_proj, &mut net.out_proj, device);
-
-    let layer = &mut net.layers.real_layers[0];
-    layer.norm.gamma = Param::from_tensor(Tensor::ones(Shape::new([D_MODEL]), device));
-    let block = &mut layer.block;
 
     // in_proj columns are `[q(3) | k(3) | v(2) | erase(3) | write(2) | Δ_in(1)]`.
     // GDN-2 applies silu to `q`/`k` before the L2 norm, so the axes are asked

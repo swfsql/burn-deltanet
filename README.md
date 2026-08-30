@@ -152,8 +152,12 @@ let net = VocabNetworkBuilder {
 .init(&device);
 ```
 
-…or use the runtime-selectable `DeltaVocabNet` / `DeltaLatentNet` /
-`DeltaBidiLayers` when the family comes out of a config file.
+…or, when the family comes out of a config file, build the same containers
+around `DeltaBlock` — one enum over the four families that is itself a `Block`.
+`DeltaVocabNet` / `DeltaLatentNet` / `DeltaBidiLayers` are exactly that
+(`VocabNetwork<DeltaBlock>` and friends): the four families share one cache and
+one set of options, so the runtime choice is made inside the block and nothing
+above it has to dispatch.
 
 ## Two execution modes
 

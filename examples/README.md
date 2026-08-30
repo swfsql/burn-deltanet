@@ -15,7 +15,7 @@ There are shared definitions in `common/mod.rs`, imported as an outside module b
 
 ##### Model Definition
 
-The network used throughout the examples is the lib-generic `DeltaLatentNet` (configured via `DeltaLatentNetConfig`), defined in `burn-deltanet`'s `src/unified/network.rs`. It is a continuous-I/O network: input and output projections (linear layers) around a generic `Layers<M>` stack, where `M` is the chosen delta-rule block (`DeltaNet`/`GatedDeltaNet1`/`DeltaProduct`/`GatedDeltaNet2`). `ModelConfigExt` (config → `Module`, plus the Muon plan) is implemented on those configs in `src/unified/network.rs`; examples define no network types of their own.
+The network used throughout the examples is the lib-generic `DeltaLatentNet` (configured via `DeltaLatentNetConfig`), defined in `burn-deltanet`'s `src/unified/network.rs`. It is a continuous-I/O network: input and output projections (linear layers) around a generic `Layers<M>` stack, here at `M = DeltaBlock` — the enum that picks the family (`DeltaNet`/`GatedDeltaNet1`/`DeltaProduct`/`GatedDeltaNet2`) at run time, from the `block` field of the config. `ModelConfigExt` (config → `Module`, plus the Muon plan) is implemented on those configs in `src/unified/network.rs`; examples define no network types of their own.
 
 ##### Tests
 

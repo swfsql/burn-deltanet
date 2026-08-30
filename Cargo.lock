@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "burn-deltanet"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "burn",
  "burn-cubecl",
@@ -952,8 +952,8 @@ dependencies = [
 
 [[package]]
 name = "burn-stack"
-version = "0.2.0"
-source = "git+https://github.com/swfsql/burn-stack.git?rev=cd593d2f053cf2592545cecf38df5fa67ca78ec1#cd593d2f053cf2592545cecf38df5fa67ca78ec1"
+version = "0.3.0"
+source = "git+https://github.com/swfsql/burn-stack.git?rev=a699e7cfb003d87da0667aca1aa789cd52144794#a699e7cfb003d87da0667aca1aa789cd52144794"
 dependencies = [
  "burn",
  "burn-cubecl",

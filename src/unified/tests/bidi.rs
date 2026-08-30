@@ -2,15 +2,15 @@
 
 use super::*;
 use crate::delta::path::DeltaPath;
-use crate::unified::{DeltaBidiLayersConfig, DeltaBidiShape};
-use burn_stack::modules::OutputMergeConfig;
+use crate::unified::{DeltaBidiLayersConfig, DeltaBidiShape, DeltaBlockConfig};
+use burn_stack::modules::{CacheStack, OutputMergeConfig};
 use burn_stack::utils::test_helpers::max_abs_diff;
 
 fn config(d_model: usize, merge: OutputMergeConfig) -> DeltaBidiLayersConfig {
-    DeltaBidiLayersConfig::GatedDeltaNet1 {
-        shape: DeltaBidiShape::new(4, vec![merge.clone(), merge]),
-        block: tiny_block(d_model),
-    }
+    DeltaBidiLayersConfig::new(
+        DeltaBidiShape::new(4, vec![merge.clone(), merge]),
+        DeltaBlockConfig::GatedDeltaNet1(tiny_block(d_model)),
+    )
 }
 
 #[test]

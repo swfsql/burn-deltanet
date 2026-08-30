@@ -4,7 +4,8 @@
 
 use crate::dataset::{NUM_CLASSES, NUM_REGISTERS, NUM_SYMBOLS};
 use burn_deltanet::prelude::{
-    DeltaLatentNetConfig, DeltaLatentShape, DeltaNetConfig, DeltaNetworkShape, QkActivation, QkNorm,
+    DeltaBlockConfig, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetConfig, DeltaNetworkShape,
+    QkActivation, QkNorm,
 };
 
 /// A DeltaNet block's state is a `[head_k_dim, head_v_dim]` matrix updated by
@@ -68,8 +69,8 @@ pub fn model_config() -> DeltaLatentNetConfig {
 
     // input  [batch, seq, NUM_SYMBOLS]  (one-hot symbol)
     // output [batch, seq, NUM_CLASSES]  (Neg / Pos logits, every scored position)
-    DeltaLatentNetConfig::DeltaNet {
-        shape: DeltaLatentShape::new(
+    DeltaLatentNetConfig::new(
+        DeltaLatentShape::new(
             NUM_SYMBOLS,
             NUM_CLASSES,
             DeltaNetworkShape::new(1)
@@ -80,8 +81,8 @@ pub fn model_config() -> DeltaLatentNetConfig {
         // no final norm: the block's output is already O(1) (its RMSNorm bounds
         // it) and the head reads it directly.
         .with_final_norm(false),
-        block,
-    }
+        DeltaBlockConfig::DeltaNet(block),
+    )
 }
 
 /// Model width — see [`model_config`].

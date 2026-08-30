@@ -2,17 +2,19 @@
 
 use super::*;
 use crate::delta::path::DeltaPath;
+use crate::common::cache::DeltaCaches;
 use crate::unified::{
-    DeltaCaches, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape, DeltaVocabNetConfig,
-    DeltaVocabShape,
+    DeltaBlockConfig, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape,
+    DeltaVocabNetConfig, DeltaVocabShape,
 };
+use burn_stack::modules::CacheStack;
 use burn_stack::utils::test_helpers::max_abs_diff;
 
 fn latent_config(d_model: usize, io: usize) -> DeltaLatentNetConfig {
-    DeltaLatentNetConfig::GatedDeltaNet1 {
-        shape: DeltaLatentShape::new(io, io, DeltaNetworkShape::new(2)).with_final_norm(true),
-        block: tiny_block(d_model),
-    }
+    DeltaLatentNetConfig::new(
+        DeltaLatentShape::new(io, io, DeltaNetworkShape::new(2)).with_final_norm(true),
+        DeltaBlockConfig::GatedDeltaNet1(tiny_block(d_model)),
+    )
 }
 
 /// The whole point of the stack: `forward` over a sequence is `step` unrolled,
@@ -47,10 +49,10 @@ fn a_latent_network_keeps_forward_step_parity() {
 fn a_vocab_network_keeps_forward_step_parity() {
     let device: Device = Default::default();
     let (batch, sequence, d_model, vocab) = (2, 7, 16, 11);
-    let net = DeltaVocabNetConfig::GatedDeltaNet1 {
-        shape: DeltaVocabShape::new(vocab, DeltaNetworkShape::new(2)),
-        block: tiny_block(d_model),
-    }
+    let net = DeltaVocabNetConfig::new(
+        DeltaVocabShape::new(vocab, DeltaNetworkShape::new(2)),
+        DeltaBlockConfig::GatedDeltaNet1(tiny_block(d_model)),
+    )
     .init(&device);
 
     let tokens = Tensor::<2, Int>::from_data(
@@ -77,83 +79,49 @@ fn a_vocab_network_keeps_forward_step_parity() {
     assert!(diff < 1e-3, "vocab network forward vs step differs by {diff}");
 }
 
-/// Every family reaches the same containers through the same enum.
+/// Every family reaches the same containers through the same block enum.
 #[test]
 fn every_family_builds_and_runs_through_the_runtime_enum() {
     let device: Device = Default::default();
     let (batch, sequence, d_model, io) = (2, 6, 16, 5);
-    let stack = || DeltaNetworkShape::new(2);
-    let shape = || DeltaLatentShape::new(io, io, stack());
+    let shape = || DeltaLatentShape::new(io, io, DeltaNetworkShape::new(2));
 
-    let configs = vec![
+    let blocks = vec![
         (
             "DeltaNet",
-            DeltaLatentNetConfig::DeltaNet {
-                shape: shape(),
-                block: crate::deltanet::prelude::DeltaNetConfig::new(d_model).with_nheads(2),
-            },
+            DeltaBlockConfig::DeltaNet(
+                crate::deltanet::prelude::DeltaNetConfig::new(d_model).with_nheads(2),
+            ),
         ),
         (
             "Gated DeltaNet",
-            DeltaLatentNetConfig::GatedDeltaNet1 {
-                shape: shape(),
-                block: tiny_block(d_model),
-            },
+            DeltaBlockConfig::GatedDeltaNet1(tiny_block(d_model)),
         ),
         (
             "DeltaProduct",
-            DeltaLatentNetConfig::DeltaProduct {
-                shape: shape(),
-                block: crate::delta_product::prelude::DeltaProductConfig::new(d_model)
+            DeltaBlockConfig::DeltaProduct(
+                crate::delta_product::prelude::DeltaProductConfig::new(d_model)
                     .with_nheads(2)
                     .with_head_k_dim(4)
                     .with_expand_v(1.0),
-            },
+            ),
         ),
         (
             "GDN-2",
-            DeltaLatentNetConfig::GatedDeltaNet2 {
-                shape: shape(),
-                block: crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(d_model)
+            DeltaBlockConfig::GatedDeltaNet2(
+                crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(d_model)
                     .with_nheads(2)
                     .with_head_k_dim(4),
-            },
+            ),
         ),
     ];
 
-    for (name, config) in configs {
-        let net = config.init(&device);
+    for (name, block) in blocks {
+        let net = DeltaLatentNetConfig::new(shape(), block).init(&device);
+        assert_eq!(name, net.layers.real_layers[0].block.family_name());
         let input = random_input(batch, sequence, io, &device);
         let (y, caches) = net.forward(input, None, DeltaPath::chunk_len(4), None);
         assert_eq!([batch, sequence, io], y.dims(), "{name}");
-        assert_eq!(name, caches.family_name());
+        assert_eq!(2, caches.slot_count(), "{name}");
     }
-}
-
-/// Runtime selection means the compiler cannot check the pairing, so a
-/// mismatch has to be a loud panic rather than a silent shape error.
-#[test]
-#[should_panic(expected = "cache family mismatch")]
-fn caches_from_the_wrong_family_panic() {
-    let device: Device = Default::default();
-    let (d_model, io) = (16, 5);
-    let gated = latent_config(d_model, io).init(&device);
-    let plain = DeltaLatentNetConfig::DeltaNet {
-        shape: DeltaLatentShape::new(io, io, DeltaNetworkShape::new(2)),
-        block: crate::deltanet::prelude::DeltaNetConfig::new(d_model).with_nheads(2),
-    }
-    .init(&device);
-
-    let (_, wrong_caches) = plain.forward(
-        random_input(1, 3, io, &device),
-        None,
-        DeltaPath::chunk_len(4),
-        None,
-    );
-    let _ = gated.forward(
-        random_input(1, 3, io, &device),
-        Some(wrong_caches),
-        DeltaPath::chunk_len(4),
-        None,
-    );
 }

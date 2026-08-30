@@ -4,7 +4,7 @@
 
 use crate::dataset::{NUM_CLASSES, NUM_REGISTERS, NUM_SYMBOLS, Turn};
 use burn_deltanet::prelude::{
-    DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape, DeltaProductConfig,
+    DeltaBlockConfig, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape, DeltaProductConfig,
 };
 
 /// Model width: four symbols placed at the vertices of a regular tetrahedron, so
@@ -59,15 +59,15 @@ pub fn model_config(turn: Turn, factors: usize) -> DeltaLatentNetConfig {
         .with_has_proj_bias(true);
     let _ = turn; // the turn shapes the dataset, not the block
 
-    DeltaLatentNetConfig::DeltaProduct {
-        shape: DeltaLatentShape::new(
+    DeltaLatentNetConfig::new(
+        DeltaLatentShape::new(
             NUM_SYMBOLS,
             NUM_CLASSES,
             DeltaNetworkShape::new(1).with_ignore_last_residual(true),
         )
         .with_final_norm(false),
-        block,
-    }
+        DeltaBlockConfig::DeltaProduct(block),
+    )
 }
 
 /// The default number of Householder factors for a turn: exactly what the

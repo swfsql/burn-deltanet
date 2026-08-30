@@ -27,8 +27,8 @@ fn random_input(batch: usize, sequence: usize, d_model: usize, device: &Device) 
 fn unroll_steps(
     block: &DeltaProduct,
     input_bsd: Tensor<3>,
-    cache: Option<DeltaProductCache>,
-) -> (Tensor<3>, DeltaProductCache) {
+    cache: Option<DeltaCache>,
+) -> (Tensor<3>, DeltaCache) {
     let [_batch, sequence, _d_model] = input_bsd.dims();
     let mut cache = cache;
     let mut outputs = Vec::with_capacity(sequence);
@@ -41,7 +41,7 @@ fn unroll_steps(
     (Tensor::cat(outputs, 1), cache.expect("at least one step"))
 }
 
-fn assert_caches_match(a: &DeltaProductCache, b: &DeltaProductCache, label: &str, tol: f32) {
+fn assert_caches_match(a: &DeltaCache, b: &DeltaCache, label: &str, tol: f32) {
     let state_diff = max_abs_diff(a.state_bhkv.clone(), b.state_bhkv.clone());
     assert!(state_diff < tol, "{label}: state differs by {state_diff}");
     match (&a.conv_bwc, &b.conv_bwc) {

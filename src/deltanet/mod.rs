@@ -6,20 +6,16 @@
 //! recurrence itself.
 //!
 //! - [`deltanet`] — the block and its config.
-//! - [`cache`] — the convolution window + recurrent
-//!   state carried between calls.
 //!
-//! The residual layer, the layer stack, the language model and the
-//! bidirectional wrappers are the family-generic types in
-//! [`burn_stack::modules`], reached through [`crate::unified`].
+//! The convolution window + recurrent state carried between calls is the
+//! shared [`DeltaCache`](crate::common::cache::DeltaCache); the residual layer,
+//! the layer stack, the language model and the bidirectional wrappers are the
+//! family-generic types in [`burn_stack::modules`], reached through
+//! [`crate::unified`].
 
-pub mod cache;
 pub mod deltanet;
 
 /// Public re-exports for DeltaNet.
 pub mod prelude {
-    pub use super::cache::{
-        DeltaNetCache, DeltaNetCacheConfig, DeltaNetCaches, DeltaNetCachesConfig,
-    };
     pub use super::deltanet::{DeltaNet, DeltaNetConfig};
 }

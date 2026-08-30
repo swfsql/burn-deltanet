@@ -3,7 +3,8 @@
 //! [`model_config`].
 
 use burn_deltanet::prelude::{
-    DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape, GatedDeltaNet2Config,
+    DeltaBlockConfig, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape,
+    GatedDeltaNet2Config,
 };
 use burn_stack::utils::{ClassLatent, GradHorizon, Schedule};
 
@@ -76,8 +77,8 @@ pub fn model_config() -> DeltaLatentNetConfig {
     // input  [batch_size, sequence_len = HEIGHT * WIDTH, input_size = 1]
     // output [batch_size, HEIGHT * WIDTH + OUTPUT_SEQUENCE_EXTRA, output_size = 10]
     // (later narrowed to the last timestep for the 10-bin classification)
-    DeltaLatentNetConfig::GatedDeltaNet2 {
-        shape: DeltaLatentShape::new(
+    DeltaLatentNetConfig::new(
+        DeltaLatentShape::new(
             1,
             10,
             // two real layers, virtually cycled (2×2×2×2) to 16 for more
@@ -88,8 +89,8 @@ pub fn model_config() -> DeltaLatentNetConfig {
                 .with_class_latents(vec![ClassLatent::Start; N_CLASS_LATENTS]),
         )
         .with_final_norm(false),
-        block,
-    }
+        DeltaBlockConfig::GatedDeltaNet2(block),
+    )
 }
 // notes:
 // - this small model requires quite a lot of vram because the whole 28*28

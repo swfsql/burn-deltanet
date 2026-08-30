@@ -225,9 +225,7 @@ fn handmade(device: &Device, factors: usize, turn_factors: &[Factor]) -> DeltaLa
     );
     let cfg = model_config(Turn::Rotate, factors); // the turn shapes the data, not the block
     let mut model = ModelConfigExt::init(&cfg, device);
-    let DeltaLatentNet::DeltaProduct(net) = &mut model else {
-        unreachable!("register-carousel configures the DeltaProduct variant")
-    };
+    let net = &mut model;
 
     net.in_proj.weight = Param::from_tensor(t1(
         &embedding_table(),
@@ -251,7 +249,9 @@ fn handmade(device: &Device, factors: usize, turn_factors: &[Factor]) -> DeltaLa
 
     let layer = &mut net.layers.real_layers[0];
     layer.norm.gamma = Param::from_tensor(Tensor::ones(Shape::new([D_MODEL]), device));
-    let block = &mut layer.block;
+    let DeltaBlock::DeltaProduct(block) = &mut layer.block else {
+        unreachable!("register-carousel configures the DeltaProduct variant")
+    };
 
     // in_proj columns are `[q(3) | k(3·u) | v(2·u) | β(1·u)]`, the per-factor
     // segments in micro-step order — see `QkvProjection::segments()`.

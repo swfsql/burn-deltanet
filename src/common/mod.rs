@@ -1,6 +1,8 @@
 //! # Shared block-level primitives
 //!
-//! The two pieces every family in this crate puts *in front of* the delta rule:
+//! The pieces every family in this crate puts *in front of* the delta rule —
+//! plus the [`cache`] it carries between calls, which is one type for all four
+//! (they differ in what they project, not in what they keep).
 //!
 //! - [`conv`] — the fused causal depthwise short convolution over the
 //!   concatenated `[q | k | v]` channels, with the rolling window a decode step
@@ -13,6 +15,7 @@
 //!   the delta rule's Householder factor `I − β k kᵀ` non-expansive for
 //!   `β ∈ (0, 2)` — see [`crate::delta`].
 
+pub mod cache;
 pub mod conv;
 pub mod gate;
 pub mod norm;
@@ -20,6 +23,7 @@ pub mod qkv;
 
 /// Public re-exports for the shared primitives.
 pub mod prelude {
+    pub use super::cache::{DeltaCache, DeltaCacheConfig, DeltaCaches, DeltaCachesConfig};
     pub use super::conv::{ConvActivation, ShortConv, ShortConvConfig};
     pub use super::gate::{
         ChannelForgetGate, ChannelForgetGateConfig, ForgetGate, ForgetGateConfig,

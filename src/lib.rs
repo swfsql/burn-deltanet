@@ -70,7 +70,9 @@
 //! tokens, LR/virtual-layer scheduling and the Muon parameter groups — lives in
 //! the block-agnostic [`burn_stack`] crate. This crate supplies the
 //! [`Block`](burn_stack::modules::Block) implementations and, in [`unified`],
-//! the runtime-selectable enums that pick a family at run time.
+//! the [`DeltaBlock`](unified::DeltaBlock) enum that picks a family at run
+//! time — with the containers above it used directly, since all four families
+//! share one cache and one set of options.
 //!
 //! ## At a glance
 //!
@@ -143,7 +145,7 @@ pub mod prelude {
 
     // The runtime-selectable unified API (this crate).
     pub use crate::unified::{
-        DeltaBidiLayers, DeltaBidiLayersConfig, DeltaBidiShape, DeltaCaches, DeltaFamily,
+        DeltaBidiLayers, DeltaBidiLayersConfig, DeltaBidiShape, DeltaBlock, DeltaBlockConfig,
         DeltaLatentNet, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape, DeltaVocabNet,
         DeltaVocabNetConfig, DeltaVocabShape,
     };
