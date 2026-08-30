@@ -213,11 +213,13 @@ cargo run --release --example register-carousel --features backend-flex -- --tur
 cargo run --release --example register-carousel --features backend-flex -- --factors 1
 ```
 
-Then one example on a real dataset, with nothing hand-built: a small GDN-2
-classifier reading each MNIST digit as a 784-pixel sequence.
+Then two examples on real datasets, with nothing hand-built: a small GDN-2
+classifier reading each MNIST digit as a 784-pixel sequence, and a ~38K-parameter
+Gated DeltaNet language model over the characters of TinyStories.
 
 ```bash
 cargo run --release --example mnist-class --features backend-flex -- --training --inference
+cargo run --release --example tiny-stories --features backend-flex -- --training --inference
 ```
 
 ## Benchmarks
