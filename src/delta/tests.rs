@@ -272,7 +272,7 @@ fn check_chunk_matches_recurrent(
     );
 
     let baseline = run_path(DeltaPath::Recurrent, &raw, &y_head, &s_head);
-    for solve in [TriSolve::Doubling, TriSolve::Neumann] {
+    for solve in [TriSolve::Blocked, TriSolve::Neumann] {
         let run = run_path(
             DeltaPath::Chunk {
                 chunk_len: Some(chunk_len),
@@ -348,6 +348,103 @@ fn chunk_len_does_not_change_the_answer() {
     for chunk_len in [3, 6, 8, 12, 24, 32] {
         let run = run_path(DeltaPath::chunk_len(chunk_len), &raw, &y_head, &s_head);
         assert_runs_match(&baseline, &run, &format!("Chunk({chunk_len})"), 1e-3);
+    }
+}
+
+/// Inputs that never change over the sequence — the worst case for the WY
+/// transform, and what a constant image background is after the projections.
+///
+/// Every `k` in a chunk then points the same way, so `N[i, j] = −βᵢ(kᵢ·kⱼ)` is
+/// `−β` on the whole strict lower triangle: `I − N` is the (scaled) prefix-sum
+/// matrix, whose inverse is a *differencing* matrix and perfectly benign — but
+/// whose Neumann series is not, its partial sums growing like the central
+/// binomial coefficient before cancelling back down.
+fn constant_raw(
+    batch: usize,
+    sequence: usize,
+    nheads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    beta: f64,
+    gated: bool,
+    device: &Device,
+) -> Raw {
+    let normal = Distribution::Normal(0.0, 1.0);
+    // One direction per (batch, head), held for the whole sequence.
+    let hold = |t: Tensor<4>, last: usize| t.expand([batch, sequence, nheads, last]);
+    let q = hold(
+        l2_normalize(Tensor::<4>::random(
+            [batch, 1, nheads, head_k_dim],
+            normal,
+            device,
+        )),
+        head_k_dim,
+    );
+    let k = hold(
+        l2_normalize(Tensor::<4>::random(
+            [batch, 1, nheads, head_k_dim],
+            normal,
+            device,
+        )),
+        head_k_dim,
+    );
+    let v = hold(
+        Tensor::<4>::random([batch, 1, nheads, head_v_dim], normal, device),
+        head_v_dim,
+    );
+    let erase = Tensor::<4>::full([batch, sequence, nheads, 1], beta, device);
+    let g = gated.then(|| Tensor::<4>::full([batch, sequence, nheads, 1], -0.05, device));
+    Raw {
+        q,
+        k,
+        v,
+        erase: erase.clone(),
+        write: erase,
+        g,
+        state: Tensor::<4>::zeros([batch, nheads, head_k_dim, head_v_dim], device),
+    }
+}
+
+/// The chunk path must survive a constant input at every chunk length — this is
+/// the sequential-MNIST case (a mostly constant background over 784 tokens),
+/// where a series-summed `(I − N)⁻¹` loses every float32 digit by `L ≈ 32` and
+/// the block diverges to `NaN` within a couple of optimiser steps.
+#[test]
+fn chunk_matches_recurrent_on_a_constant_input() {
+    let device: Device = Default::default();
+    let (batch, sequence, nheads, head_k_dim, head_v_dim) = (2, 128, 2, 8, 8);
+    for (beta, gated) in [(0.9, false), (0.9, true), (1.8, true)] {
+        let raw = constant_raw(
+            batch,
+            sequence,
+            nheads,
+            head_k_dim,
+            head_v_dim,
+            beta,
+            gated,
+            &device,
+        );
+        let y_head = Tensor::<4>::random(
+            [batch, sequence, nheads, head_v_dim],
+            Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let s_head = Tensor::<4>::random(
+            [batch, nheads, head_k_dim, head_v_dim],
+            Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+
+        let baseline = run_path(DeltaPath::Recurrent, &raw, &y_head, &s_head);
+        for chunk_len in [16, 32, 48, 64, 128] {
+            let run = run_path(DeltaPath::chunk_len(chunk_len), &raw, &y_head, &s_head);
+            assert_runs_match(
+                &baseline,
+                &run,
+                &format!("Chunk({chunk_len}) on a constant input (beta {beta}, gated {gated})"),
+                1e-3,
+            );
+        }
     }
 }
 
@@ -539,7 +636,7 @@ fn check_channel_chunk_matches_recurrent(
     );
 
     let baseline = run_path(DeltaPath::Recurrent, &raw, &y_head, &s_head);
-    for solve in [TriSolve::Doubling, TriSolve::Neumann] {
+    for solve in [TriSolve::Blocked, TriSolve::Neumann] {
         let run = run_path(
             DeltaPath::Chunk {
                 chunk_len: Some(chunk_len),

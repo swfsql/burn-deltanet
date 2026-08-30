@@ -156,6 +156,34 @@ fn forward_matches_step_under_a_fast_decay() {
     );
 }
 
+/// A **constant** input over a long sequence — a z-scored image background,
+/// which is most of sequential MNIST.
+///
+/// Every key in a chunk then points the same way, which is the worst case for
+/// the WY transform's `(I − N)⁻¹` (see [`crate::delta::tri`]). The two paths
+/// evaluate the same recurrence, so at the default chunk length the block must
+/// still track `DeltaPath::Recurrent` and its state must stay bounded.
+#[test]
+fn a_constant_input_stays_bounded_at_the_default_chunk_length() {
+    let device: Device = Default::default();
+    let (batch, sequence, d_model) = (1, 256, 32);
+    let block = tiny_config(d_model).with_nheads(4).init(&device);
+    let input = Tensor::<3>::full([batch, sequence, d_model], -0.424, &device);
+
+    let (y_recurrent, cache_recurrent) = block.forward(input.clone(), None, DeltaPath::Recurrent);
+    for path in [
+        DeltaPath::chunk_len(32),
+        DeltaPath::chunk_len(48),
+        DeltaPath::chunk(),
+        DeltaPath::chunk_len(128),
+    ] {
+        let (y, cache) = block.forward(input.clone(), None, path);
+        let diff = max_abs_diff(y_recurrent.clone(), y);
+        assert!(diff < 1e-4, "outputs differ by {diff} (path {path:?})");
+        assert_caches_match(&cache_recurrent, &cache, &format!("{path:?}"), 1e-4);
+    }
+}
+
 #[test]
 fn split_forward_matches_a_single_forward() {
     let device: Device = Default::default();

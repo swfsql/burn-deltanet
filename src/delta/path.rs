@@ -36,7 +36,7 @@ impl Default for DeltaPath {
     fn default() -> Self {
         Self::Chunk {
             chunk_len: None,
-            solve: TriSolve::Doubling,
+            solve: TriSolve::Blocked,
         }
     }
 }
@@ -54,7 +54,7 @@ impl DeltaPath {
     pub fn chunk_len(chunk_len: usize) -> Self {
         Self::Chunk {
             chunk_len: Some(chunk_len),
-            solve: TriSolve::Doubling,
+            solve: TriSolve::Blocked,
         }
     }
 

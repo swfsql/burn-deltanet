@@ -19,7 +19,7 @@ same shape, different recurrence. Everything *around* the block — layers,
 (virtual-)layer stacks, bidirectional pairs, latent/vocab networks, multi-gate
 residuals, class tokens, schedules, the Muon plan — lives in
 **[`burn-stack`](../burn-stack)** (`../burn-stack/CLAUDE.md`), which is
-block-agnostic by construction. This crate supplies the three `Block`
+block-agnostic by construction. This crate supplies the four `Block`
 implementations plus the runtime-selectable `Delta*` enums in `src/unified/`.
 **Never push anything delta-specific into `burn-stack`** — a name, a shape
 assumption, or a doc reference. If it needs one, it belongs here.
@@ -40,7 +40,8 @@ cargo bench                 # benches/layer.rs: single-block, three modes
   enabled by default). Each just enables the matching `burn/<backend>`; several may
   be compiled in at once and `Device::default()` resolves which to use (honouring
   `BURN_DEVICE`).
-- `deltanet`/`gated-deltanet-1`/`delta-product`/`autodiff`/`optim` are default-on;
+- `deltanet`/`gated-deltanet-1`/`gated-deltanet-2`/`delta-product`/`autodiff`/`optim`
+  are default-on;
   `optim` (Muon parameter groups) implies `burn/optim`+`burn/std`.
   `cubecl`/`fusion` gate the per-backend impls on those backend families.
   `dev-f16`/`dev-simd`/`dev-autotune` are example/test conveniences.
@@ -85,12 +86,13 @@ src/
 │  ├─ norm.rs        QkActivation / QkNorm (L2 bounds the Householder) + OutNorm
 │  └─ qkv.rs         QkvProjection: the fused `[q|k|v|β|gate|extra]` front-end,
 │                    head split, GVA expansion, micro-step fold (DeltaProduct)
-├─ delta/            the delta-rule core, shared by all three families
+├─ delta/            the delta-rule core, shared by all four families
 │  ├─ mod.rs         module doc: the recurrence, the WY derivation, notation table
 │  ├─ path.rs        DeltaInput (what a block hands over) + DeltaPath (selector)
 │  ├─ recurrent.rs   delta_step: one tick; the definition, and the decode primitive
 │  ├─ chunk.rs       the chunkwise WY algorithm (gate as an Option)
-│  ├─ tri.rs         (I − N)⁻¹ for the WY transform: Doubling | Neumann
+│  ├─ decay.rs       BlockDecay: the intra-chunk scores under a per-channel gate
+│  ├─ tri.rs         (I − N)⁻¹ for the WY transform: Blocked | Neumann
 │  └─ tests/         path agreement + `reference.rs`, values captured from
 │                    flash-linear-attention at float64
 ├─ deltanet/         DeltaNet: no forget gate (α ≡ 1)
@@ -99,13 +101,16 @@ src/
 ├─ gated_deltanet_1/   Gated DeltaNet: + the scalar forget gate
 │  ├─ gated_deltanet_1.rs  block + config (head_k_dim/expand_v, grouped values)
 │  └─ cache.rs       GatedDeltaNet1Cache(s)
+├─ gated_deltanet_2/   GDN-2: erase/write/decay all per channel
+│  ├─ gated_deltanet_2.rs  block + config (two low-rank bottlenecks)
+│  └─ cache.rs       GatedDeltaNet2Cache(s)
 ├─ delta_product/    DeltaProduct: u Householder factors per transition
 │  ├─ delta_product.rs   block + config; q on the last micro-step, α on the first
 │  └─ cache.rs       DeltaProductCache(s) — same size as the others
 └─ unified/          the runtime-selectable API + where the families plug in
    ├─ mod.rs         module doc carries what Muon does and does not see
    ├─ cache.rs       DeltaCaches enum + one macro emitting Block/BlockConfig/
-   │                 CacheStack for all three families
+   │                 CacheStack for all four families
    ├─ family.rs      DeltaFamily: the family ↔ DeltaCaches bridge the enums use
    ├─ network.rs     DeltaLatentNet / DeltaVocabNet (+ Configs, shared shapes)
    ├─ bidi.rs        DeltaBidiLayers (+ Config)
@@ -126,9 +131,9 @@ starting-off searching from `files.md`.
 
 ### Layer → Network hierarchy (all families)
 
-All three families share **one** set of generic composition types, which live in
+All four families share **one** set of generic composition types, which live in
 `burn-stack` and are parameterised by the core block `M`
-(`DeltaNet`/`GatedDeltaNet1`/`DeltaProduct`):
+(`DeltaNet`/`GatedDeltaNet1`/`GatedDeltaNet2`/`DeltaProduct`):
 
 ```text
 VocabNetwork<M>   embedding → Layers<M> → final RMSNorm → LM head → logits
@@ -139,7 +144,7 @@ M (Block)         the delta-rule core — this crate
 ```
 
 A family joins the stack by implementing `burn_stack::modules::{Block,
-BlockConfig}` and `CacheStack` on its `Caches` (all three, via one macro, in
+BlockConfig}` and `CacheStack` on its `Caches` (all four, via one macro, in
 `src/unified/cache.rs`). `Block::Options` is `DeltaPath` for every family —
 which is why the runtime enums are much smaller than `burn-mamba`'s.
 
@@ -178,16 +183,26 @@ agree on values *and* gradients.
 
 The chunk algorithm needs `T = (I − N)⁻¹` for a strictly-lower-triangular
 `N[i,j] = −βᵢ(kᵢ·kⱼ)e^{Gᵢ−Gⱼ}`. `N` is nilpotent, so the Neumann series is an
-identity with finitely many terms. The reference kernel evaluates it by `L`
-serial row updates in registers — the worst possible shape for portable ops — so
-`tri.rs` factors it instead:
+identity with finitely many terms — and summing it is still wrong: when a
+chunk's keys correlate (a constant input) `‖Nʲ‖` peaks near `C(L−2, L/2)`,
+`10¹⁷` at `L = 64`, before cancelling back down to a `T` of order 1. Nothing
+survives that in f32. `TriSolve::Neumann` accumulates the series term by term
+and is a reference only, usable to `L ≈ 16`.
+
+`TriSolve::Blocked` (default) never forms a power of `N`. It is the block 2×2
+inversion applied to every adjacent pair of diagonal blocks at once, doubling
+the block size each step — a blocked forward substitution, where the reference
+kernel does the same substitution one row at a time:
 
 ```text
-  Σ_{j<2^m} Nʲ = (I + N^{2^{m−1}}) ⋯ (I + N²)(I + N)
+  ⎡A  0⎤⁻¹   ⎡  A⁻¹      0  ⎤
+  ⎣C  B⎦   = ⎣−B⁻¹CA⁻¹  B⁻¹ ⎦        P ← P + P X P
 ```
 
-`TriSolve::Doubling` (default) is `⌈log₂ L⌉` steps of two matmuls;
-`TriSolve::Neumann` is the literal term-by-term reference it is tested against.
+`P` holds the level's exact block-diagonal inverses and `X = (D_m − D_{2m}) ⊙ N`
+the `C` blocks it absorbs (`D_m[i,j] = ⌊i/m⌋ > ⌊j/m⌋`, an expanded `tril(-1)` of
+the block grid). `⌈log₂ L⌉` steps of two matmuls, every intermediate an exact
+inverse of a principal submatrix of `I − N`, so nothing grows.
 
 Chunks are processed **serially**: the inter-chunk recurrence
 `S ← (αI − KᵀW)S + KᵀU` is matrix-valued with a rank-`chunk_len` update, so
@@ -201,15 +216,21 @@ exact identity: `k = 0` writes nothing, `β = 0` corrects nothing, `g = 0` decay
 nothing, `q = 0` reads nothing. This is why `q`/`k` must be **L2-normalised
 before** padding — normalising a zero pad row would divide by its own zero norm.
 
-### The three families
+### The four families
 
 - **DeltaNet** — `α ≡ 1`. `expand_k`/`expand_v` ratios of `d_model`;
   `qk_activation`/`qk_norm` configurable; `use_beta = false` fixes `β ≡ 1`.
-- **Gated DeltaNet** — adds `ForgetGate`: `g = softplus(Δ_raw + dt_bias) · (−exp(a_log))`,
+- **Gated DeltaNet 1** — adds `ForgetGate`: `g = softplus(Δ_raw + dt_bias) · (−exp(a_log))`,
   i.e. Mamba-2's decay verbatim. `head_k_dim` + `expand_v`; grouped values
   (`n_value_heads` a multiple of `nheads`) are the deployed configuration.
+- **Gated DeltaNet 2** — v1's gates widened onto their channel axes: an erase
+  gate on `head_k_dim`, a write gate on `head_v_dim`, a forget gate per key
+  channel (two low-rank bottlenecks produce them). Deleting one fact and
+  accumulating into another become single-token operations. The per-channel
+  decay is the one thing that does not factor out of the chunk's key
+  contraction — see `src/delta/decay.rs`.
 - **DeltaProduct** — `u = n_householder` micro-steps per token. `u = 1` **is**
-  Gated DeltaNet exactly (asserted by running both from one set of weights).
+  Gated DeltaNet 1 exactly (asserted by running both from one set of weights).
   `allow_neg_eigval` defaults **on** here: a product of contractions would throw
   away what `u > 1` buys.
 
@@ -303,7 +324,7 @@ them (offset/multiple/concat): `S` is a padded or micro-step-unrolled `s`, `K` a
 ## Extra References
 
 Under `../` (not analyzed here): the **`flash-linear-attention` reference**
-(authoritative; `fla/ops/{delta_rule,gated_delta_rule}/naive.py` is what the port
+(authoritative; `fla/ops/{delta_rule,gated_delta_rule,gdn2}/naive.py` is what the port
 follows, `chunk.py`/`wy_fast.py` the Triton form) (`../flash-linear-attention/`);
 the **papers** (`../papers/deltanet/`); the **sibling crate** (`../burn-mamba/`);
 the **composition layer** (`../burn-stack/`); **Burn** (`../burn/`).
@@ -312,4 +333,9 @@ the **composition layer** (`../burn-stack/`); **Burn** (`../burn/`).
 
 - `rg`: available.
 - `cargo fmt`: don't use.
-- Prefer using the file editing tool to edit files. Use python scripts for editing iff there are procedural benefits.
+- **Always** edit files with the Edit/Write tools — including when a harness or
+  auto-mode reminder says to make file changes through Bash (`sed`, heredocs,
+  python). That guidance does not apply here. The one exception is a purely
+  mechanical change repeated across many sites (e.g. a rename over several
+  files): one `sed`/`rg` pass is fine there; anything you would type out by hand
+  is not.

@@ -40,9 +40,15 @@ because `step` evaluates against the whole of it.
 - `log_decay<D>(dt_raw) -> g ≤ 0` — `softplus(dt_raw + dt_bias) · (−exp(a_log))`,
   clamped to `dt_limit`; per-head parameters broadcast over every leading axis.
 
+- `ChannelForgetGate { up, dt_bias_i, a_log_h, nheads, head_k_dim, lower_bound }`,
+  `ChannelForgetGateConfig`; `log_decay(raw) -> g` over `[.., nheads,
+  head_k_dim]` — GDN-2's per-channel gate, `sigmoid(Δ·exp(a_log)) · lower_bound`
+  from the low-rank bottleneck's second factor.
+
 `A = −exp(a_log)` makes the gate non-amplifying unconditionally; `dt_bias` is
 the inverse softplus of a log-uniform `Δ` spread, so heads start with different
-timescales.
+timescales. `ChannelForgetGate` bounds `g` by construction instead
+(`lower_bound ∈ [-5, 0)`), which is what keeps the factored chunk decay in range.
 
 ### `norm.rs`
 - `QkActivation { Identity, Silu, Relu, EluPlusOne }`, `QkNorm { L2, Sum, None }`
@@ -90,18 +96,24 @@ and the notation table. No code.
 
 ### `path.rs`
 - `DeltaPath { Recurrent, Chunk { chunk_len: Option<usize>, solve: TriSolve } }`
-  — `Default` is `Chunk { None, Doubling }`; `DEFAULT_CHUNK_LEN = 64`;
+  — `Default` is `Chunk { None, Blocked }`; `DEFAULT_CHUNK_LEN = 64`;
   `chunk()`, `chunk_len(n)`, `resolved_chunk_len()`.
-- `DeltaInput { q_bshk, k_bshk, v_bshv, beta_bsh, g_bsh: Option<_>, state_bhkv,
-  scale: Option<f64> }` + `dims()`, `resolved_scale()` (`1/√head_k_dim`),
-  `sanity()`, `run(path) -> (y_bshv, final_state_bhkv)`.
+- `DeltaInput { q_bshk, k_bshk, v_bshv, erase_bshK, write_bshV, g_bshK:
+  Option<_>, state_bhkv, scale: Option<f64> }` + `dims()`, `resolved_scale()`
+  (`1/√head_k_dim`), `has_channel_decay()`, `sanity()`,
+  `run(path) -> (y_bshv, final_state_bhkv)`.
+- `beta_gates(beta)` — the `(erase, write)` pair a per-head `β` stands for.
+
+The three gates ride their broadcast axes: last axis `1` (one number per head)
+or the full channel count (GDN-2). The same expressions serve both; only the
+chunk path looks at the width.
 
 `q`/`k` arrive activated and normalised but **not** scaled — `scale` is applied
 inside, so the same bundle reads identically on either path.
 
 ### `recurrent.rs`
-- `delta_step(q_bhk, k_bhk, v_bhv, beta_bh, g_bh: Option<_>, state_bhkv, scale)
-  -> (y_bhv, next_state)` — the definition, and the primitive every family's
+- `delta_step(q_bhk, k_bhk, v_bhv, erase_bhK, write_bhV, g_bhK: Option<_>,
+  state_bhkv, scale) -> (y_bhv, next_state)` — the definition, and the primitive every family's
   `step()` decodes with. Retrieval and readout are `[1,k]@[k,v]` matmuls rather
   than broadcast-and-sum, so the backend sees GEMMs.
 - `DeltaInput::delta_recurrent()` — unrolls it.
@@ -114,13 +126,29 @@ so every matmul batches over `(b, n, h)` and acts on the `[chunk_len, ·]` plane
 The gate is threaded as an `Option` throughout — `None` builds no decay tensors
 at all rather than multiplying by ones.
 
-### `tri.rs`
-- `TriSolve { Doubling, Neumann }`, `unit_lower_inverse<D>(n_strict, solve)`.
+### `decay.rs`
+- `DECAY_BLOCK_LEN = 16`; `BlockDecay::new(k_bnhlk, gc_bnhlk)`,
+  `.scores(rows_bnhlk)` — the intra-chunk score matrix under a **per-channel**
+  gate (`pub(super)`).
 
-`N` is nilpotent, so the series is exact. `Doubling` factors it as
-`∏(I + N^{2^j})` — `⌈log₂ L⌉` steps of two matmuls, versus the reference
-kernel's `L` serial row updates. The caller owes the strict-lower property;
-nothing here re-masks it.
+A per-head decay factors out of the key contraction into a `[chunk_len,
+chunk_len]` mask; a per-channel one shares the channel index with the
+contraction, and splitting it as `e^{Gᵢ}·e^{−Gⱼ}` overflows f32 within a few
+dozen tokens. Following `fla/ops/gdn2/chunk_intra.py`, each block of
+`DECAY_BLOCK_LEN` rows gets its own reference `G` at the block's middle row, so
+neither factor spans more than half a block. Out-of-range columns get `−∞`
+(exactly `0`, never `inf`) and are masked away downstream anyway.
+
+### `tri.rs`
+- `TriSolve { Blocked, Neumann }`, `unit_lower_inverse<D>(n_strict, solve)`.
+
+`N` is nilpotent, so the series is exact — and unusable: with a chunk's keys
+correlated its partial sums peak near `C(L−2, L/2)` before cancelling down to a
+`T` of order 1, so `Neumann` is a reference only. `Blocked` (default) inverts by
+blocked forward substitution instead — `P ← P + P X P` over doubling block
+sizes, `⌈log₂ L⌉` steps of two matmuls, every intermediate an exact inverse of a
+principal submatrix. The caller owes the strict-lower property; nothing here
+re-masks it.
 
 ### `tests/reference.rs`
 Values captured from `flash-linear-attention`'s `delta_rule_recurrence` and
@@ -130,7 +158,7 @@ rather than only a self-consistency check.
 
 ---
 
-## The three families
+## The four families
 
 Each is `<family>.rs` (block + config) plus `cache.rs`, and each cache is the
 same two fields: `conv_bwc: Option<Tensor<3>>` and
@@ -157,6 +185,19 @@ Every block exposes `forward(x_bsd, cache, path)`, `step(x_bd, cache)`,
   segment.
 - Always SiLU + L2 on `q`/`k`; output gate on by default.
 
+### `src/gated_deltanet_2/gated_deltanet_2.rs`
+- `GatedDeltaNet2 { qkv, gate: ChannelForgetGate, out_gate: Option<Linear>,
+  norm, out_proj }`, `GatedDeltaNet2Config`; `bottleneck()`.
+- Same knobs as v1 (`head_k_dim`, `expand_v`, `n_value_heads`) plus the
+  bottleneck rank (`0` ⇒ `head_v_dim`, the reference's choice).
+- Two low-rank bottlenecks, `Δ` and the output gate: their **first** factors are
+  ordinary `extra` segments of the fused projection, their second factors are
+  `ChannelForgetGate::up` and `out_gate`.
+- Erase (`head_k_dim`) and write (`head_v_dim`) gates in place of the scalar
+  `β`, so deleting one fact and accumulating into another are single-token
+  operations — the property the family exists for, asserted directly on
+  `delta_step`.
+
 ### `src/delta_product/delta_product.rs`
 - `DeltaProduct { qkv, gate: Option<ForgetGate>, norm, out_proj }`,
   `DeltaProductConfig`; `n_householder()`.
@@ -176,11 +217,11 @@ Module header: what the runtime enums are for, and what Muon does and does not
 see. Declares the submodules and re-exports.
 
 ### `cache.rs`
-- `DeltaCaches { DeltaNet, GatedDeltaNet1, DeltaProduct }` (plain runtime state,
-  not a `Module`) + `family_name()`, `slot_count()`.
+- `DeltaCaches { DeltaNet, GatedDeltaNet1, GatedDeltaNet2, DeltaProduct }` (plain
+  runtime state, not a `Module`) + `family_name()`, `slot_count()`.
 - `impl_block_for_family!` — one macro emitting `CacheStack`, `Block` and
-  `BlockConfig` for all three families. They differ in what they *project*, not
-  in what they *carry*, so the wiring is the same text three times over.
+  `BlockConfig` for all four families. They differ in what they *project*, not
+  in what they *carry*, so the wiring is the same text four times over.
 - `cache_to_inner`/`cache_from_inner` are spelled out field by field:
   `Module::map` is a no-op on the bare `Tensor`s a cache holds.
 
@@ -200,6 +241,13 @@ bodies are generic functions over `DeltaFamily`.
   `prime`, `init`, `muon_plan`.
 - Private generics `latent_forward`/`latent_step`/`latent_prime`/`vocab_*` that
   every arm delegates to.
+- A trailing `mod model_config_ext` implements `burn_stack::modules::
+  ModelConfigExt` (`init` + `muon_plan`) for both configs, forwarding to the
+  inherent methods. It has to live in the lib: the trait is `burn-stack`'s and
+  the types are this crate's, so an example crate cannot own it (orphan rule).
+
+`grad_horizon` is a `burn_stack::utils::GradHorizon` — per weight set, not a
+suffix length.
 
 ### `bidi.rs`
 - `DeltaBidiShape`, `DeltaBidiLayers` (+ `Config`): `forward`, `init`,

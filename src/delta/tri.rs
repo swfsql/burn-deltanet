@@ -7,30 +7,35 @@
 //! ```
 //!
 //! for every `[chunk_len, chunk_len]` block. `N` is **nilpotent** (`N^L = 0`),
-//! so the Neumann series is not an approximation but an identity with finitely
-//! many terms:
+//! so the Neumann series `I + N + N² + … + N^{L−1}` is not an approximation but
+//! an identity — and it is nonetheless the wrong way to evaluate it. When the
+//! keys inside a chunk point the same way (a constant input: an image
+//! background, a run of padding) `N` is `−β` on the whole strict lower
+//! triangle, `‖Nʲ‖` peaks around `C(L−2, L/2)` — `10¹⁷` at `L = 64` — and the
+//! terms cancel back down to a `T` whose entries never exceed `β`. In float32
+//! nothing survives that cancellation, and the block's state diverges to `NaN`
+//! within a couple of optimiser steps.
+//!
+//! [`TriSolve::Blocked`] (the default) never forms a power of `N`. It inverts
+//! `I − N` the way a blocked forward substitution does, doubling the block size
+//! each step:
 //!
 //! ```text
-//!   (I − N)⁻¹ = I + N + N² + … + N^{L−1}
+//!   ⎡A  0⎤⁻¹   ⎡  A⁻¹      0  ⎤
+//!   ⎣C  B⎦   = ⎣−B⁻¹CA⁻¹  B⁻¹ ⎦
 //! ```
 //!
-//! The reference Triton kernel evaluates this by forward substitution — `L`
-//! strictly serial row updates, cheap only because a warp does them in
-//! registers. That shape is the worst possible one for portable tensor ops, so
-//! this module uses the factorisation instead
+//! With `P` the block-diagonal matrix of the level's inverses and `X` the
+//! `C` blocks the level is about to absorb (`X = mask ⊙ N`, one mask per
+//! level), that whole level is `P ← P + P X P` — two batched matmuls, and the
+//! same `⌈log₂ L⌉` steps the series factorisation took. Every intermediate is
+//! an exact inverse of a principal submatrix of `I − N`, so nothing grows.
 //!
-//! ```text
-//!   Σ_{j<2^m} Nʲ = (I + N^{2^{m−1}}) ⋯ (I + N²)(I + N)
-//! ```
-//!
-//! which reaches the same finite sum in `⌈log₂ L⌉` steps of two batched
-//! matmuls each ([`TriSolve::Doubling`], the default: 12 matmuls at `L = 64`
-//! instead of 64 serial row updates). [`TriSolve::Neumann`] accumulates the
-//! series term by term and exists as the literal, obviously-correct reference
-//! the doubling path is tested against.
-//!
-//! Both are exact in exact arithmetic, so they agree to floating-point
-//! rounding on values *and* gradients.
+//! The reference Triton kernel does the same substitution, one row at a time —
+//! `L` strictly serial register updates, the worst possible shape for portable
+//! tensor ops. [`TriSolve::Neumann`] accumulates the series term by term and
+//! exists as the literal, obviously-correct reference the blocked path is
+//! tested against at the small sizes where the series is still conditioned.
 
 use burn::prelude::*;
 use burn_stack::modules::sanity as san;
@@ -38,10 +43,15 @@ use burn_stack::modules::sanity as san;
 /// How to invert `I − N` for a strictly-lower-triangular nilpotent `N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum TriSolve {
-    /// Repeated squaring: `⌈log₂ L⌉` steps, two matmuls each. The default.
+    /// Blocked forward substitution: `⌈log₂ L⌉ `steps, two matmuls each. Exact
+    /// for any `N`, and the only one of the two that is usable past `L ≈ 16`.
+    /// The default.
     #[default]
-    Doubling,
-    /// Term-by-term Neumann accumulation: `L − 1` matmuls. The reference.
+    Blocked,
+    /// Term-by-term Neumann accumulation: `L − 1` matmuls. Exact in exact
+    /// arithmetic, but its partial sums are catastrophically larger than their
+    /// own limit as soon as the chunk's keys correlate — a reference, not a
+    /// production path (see the [module header](self)).
     Neumann,
 }
 
@@ -61,18 +71,23 @@ pub fn unit_lower_inverse<const D: usize>(n_strict: Tensor<D>, solve: TriSolve) 
     );
     san(&n_strict);
 
-    let identity: Tensor<D> = Tensor::eye(size, &n_strict.device()).unsqueeze();
+    let device = n_strict.device();
+    let identity: Tensor<D> = Tensor::eye(size, &device).unsqueeze();
 
     let t = match solve {
-        TriSolve::Doubling => {
-            // p = Σ_{j<reach} Nʲ,  m = N^reach
-            let mut p = identity + n_strict.clone();
-            let mut m = n_strict;
-            let mut reach = 2usize;
-            while reach < size {
-                m = m.clone().matmul(m);
-                p = p.clone() + m.clone().matmul(p);
-                reach *= 2;
+        TriSolve::Blocked => {
+            // `p` holds the exact inverse of every `[block, block]` diagonal
+            // block of `I − N`; `lower` is that level's block-lower mask, so
+            // `lower − coarser` selects exactly the `C` blocks being absorbed.
+            let mut p = identity;
+            let mut lower = block_strict_lower(size, 1, &device);
+            let mut block = 1usize;
+            while block < size {
+                let coarser = block_strict_lower(size, block * 2, &device);
+                let x: Tensor<D> = n_strict.clone() * (lower - coarser.clone()).unsqueeze();
+                p = p.clone() + p.clone().matmul(x).matmul(p);
+                lower = coarser;
+                block *= 2;
             }
             p
         }
@@ -88,6 +103,28 @@ pub fn unit_lower_inverse<const D: usize>(n_strict: Tensor<D>, solve: TriSolve) 
     };
     san(&t);
     t
+}
+
+/// `[size, size]` 0/1 mask of the entries strictly below the diagonal **in
+/// units of `block`**: `1` where `⌊i/block⌋ > ⌊j/block⌋`.
+///
+/// Built by expanding a `tril(-1)` of the block grid, so the difference of two
+/// consecutive levels (`block` and `2·block`) is the set of lower-left corner
+/// blocks that the level's merge fills in.
+fn block_strict_lower(size: usize, block: usize, device: &Device) -> Tensor<2> {
+    if block >= size {
+        return Tensor::zeros([size, size], device);
+    }
+    let nblocks = size.div_ceil(block);
+    let padded = nblocks * block;
+    Tensor::<2>::ones([nblocks, nblocks], device)
+        .tril(-1)
+        // Each grid entry becomes a `[block, block]` constant tile.
+        .reshape([nblocks, 1, nblocks, 1])
+        .expand([nblocks, block, nblocks, block])
+        .reshape([padded, padded])
+        .narrow(0, 0, size)
+        .narrow(1, 0, size)
 }
 
 #[cfg(all(test, feature = "_dev-test"))]

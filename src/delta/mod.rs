@@ -83,7 +83,8 @@
 //!
 //! ## Layout
 //!
-//! - [`tri`] — the `(I − N)⁻¹` the WY transform needs, in `log₂ L` matmuls.
+//! - [`tri`] — the `(I − N)⁻¹` the WY transform needs, as `log₂ L` steps of a
+//!   blocked forward substitution (*not* as a series: see the module header).
 //! - [`decay`] — the intra-chunk score matrices under a *per-channel* gate,
 //!   where the decay no longer factors out of the key contraction.
 //! - [`recurrent`] — the token-by-token recurrence: the definition above, and

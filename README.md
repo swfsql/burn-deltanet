@@ -177,9 +177,13 @@ on a whole network.
 
 The chunk length trades intra-chunk GEMM work against the number of serial
 inter-chunk steps; every reference kernel settles on 64, which is the default.
-`solve` picks how the WY transform's `(I − N)⁻¹` is evaluated — `Doubling`
-(`⌈log₂ L⌉` steps of two matmuls, the default) or `Neumann` (the literal
-term-by-term series, kept as the obviously-correct reference).
+`solve` picks how the WY transform's `(I − N)⁻¹` is evaluated — `Blocked`
+(blocked forward substitution: `⌈log₂ L⌉` steps of two matmuls, the default) or
+`Neumann` (the literal term-by-term series, kept as the obviously-correct
+reference). Only `Blocked` is usable past a chunk length of ~16: `N` is
+nilpotent, so the series is exact in exact arithmetic, but when the keys inside
+a chunk correlate its partial sums pass through `10¹⁷` on the way to a `T` of
+order 1, which no float32 survives.
 
 Unlike Mamba-2's chunk scan, the inter-chunk recurrence here is matrix-valued
 with a rank-`chunk_len` update, so there is no scalar-decay shortcut to

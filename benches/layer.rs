@@ -242,7 +242,7 @@ fn paths(shape: Shape) -> Vec<(&'static str, DeltaPath)> {
             "chunk-doubling",
             DeltaPath::Chunk {
                 chunk_len: Some(shape.chunk_len),
-                solve: TriSolve::Doubling,
+                solve: TriSolve::Blocked,
             },
         ),
         (
