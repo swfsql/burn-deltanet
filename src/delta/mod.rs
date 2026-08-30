@@ -28,7 +28,7 @@
 //!
 //! `αₜ ∈ (0, 1]` is the optional forget gate: `αₜ ≡ 1` is
 //! [DeltaNet](crate::deltanet), `αₜ = exp(Δₜ A)` is
-//! [Gated DeltaNet](crate::gated_deltanet). Both live in the same code here,
+//! [Gated DeltaNet](crate::gated_deltanet_1). Both live in the same code here,
 //! with the gate as an `Option`, because the gated recurrence *is* the ungated
 //! one at `g = 0` — but a `None` gate skips the decay tensors outright rather
 //! than multiplying by ones.
@@ -38,7 +38,7 @@
 //! `βₜ` above is *one number per head*: it sets both how much of the old
 //! association is erased and how much of `vₜ` is written. Widening it onto the
 //! channel axes decouples the two, and widening `αₜ` likewise gives each key
-//! channel its own timescale — which is [GDN-2](crate::gdn2):
+//! channel its own timescale — which is [GDN-2](crate::gated_deltanet_2):
 //!
 //! ```text
 //!   Sₜ = (I − kₜ (bₜ ⊙ kₜ)ᵀ) diag(αₜ) Sₜ₋₁ + kₜ (wₜ ⊙ vₜ)ᵀ

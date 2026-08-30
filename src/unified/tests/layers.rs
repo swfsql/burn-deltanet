@@ -3,12 +3,12 @@
 
 use super::*;
 use crate::delta::path::DeltaPath;
-use crate::gated_deltanet::prelude::GatedDeltaNet;
+use crate::gated_deltanet_1::prelude::GatedDeltaNet1;
 use burn_stack::modules::{Layers, LayersBuilder};
-use burn_stack::utils::{Schedule, test_helpers::max_abs_diff};
+use burn_stack::utils::{GradHorizon, Schedule, test_helpers::max_abs_diff};
 
 fn unroll_steps(
-    layers: &Layers<GatedDeltaNet>,
+    layers: &Layers<GatedDeltaNet1>,
     input_bsd: Tensor<3>,
 ) -> Tensor<3> {
     let [_batch, sequence, _d_model] = input_bsd.dims();
@@ -23,7 +23,7 @@ fn unroll_steps(
     Tensor::cat(outputs, 1)
 }
 
-fn check_stack(builder: LayersBuilder<crate::gated_deltanet::prelude::GatedDeltaNetConfig>) {
+fn check_stack(builder: LayersBuilder<crate::gated_deltanet_1::prelude::GatedDeltaNet1Config>) {
     let device: Device = Default::default();
     let (batch, sequence, d_model) = (2, 9, 16);
     let layers = builder.init(&device);
@@ -93,7 +93,7 @@ fn a_gradient_horizon_leaves_the_forward_untouched() {
     let full = builder().init(&device);
     // Same weights, but only the top two virtual layers back-propagate.
     let truncated = Layers {
-        grad_horizon: Some(2),
+        grad_horizon: Some(GradHorizon::last(2, 6)),
         ..full.clone()
     };
 

@@ -27,7 +27,7 @@
 //!   linear functionals, not a matrix whose singular values mean anything;
 //!   Muon's orthogonalisation would mix heads that share nothing. They stay on
 //!   AdamW, as do the 1-D `a_log`/`dt_bias`/`γ` and the 3-D convolution weight.
-//!   [GDN-2](crate::gdn2) has no such channel: its erase, write and `Δ` maps
+//!   [GDN-2](crate::gated_deltanet_2) has no such channel: its erase, write and `Δ` maps
 //!   all produce feature *vectors*, so they are Muon's.
 //! - **Nothing else.** `q`, `k`, `v` and the output gate *are* matrices, and
 //!   under [DeltaProduct](crate::delta_product) each of the `u` key and value
@@ -45,9 +45,9 @@ pub mod network;
     test,
     feature = "_dev-test",
     feature = "deltanet",
-    feature = "gated-deltanet",
+    feature = "gated-deltanet-1",
     feature = "delta-product",
-    feature = "gdn2"
+    feature = "gated-deltanet-2"
 ))]
 mod tests;
 

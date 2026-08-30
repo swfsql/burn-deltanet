@@ -36,14 +36,14 @@ pub enum DeltaBidiLayers {
     #[cfg(feature = "deltanet")]
     DeltaNet(BidiLayers<crate::deltanet::prelude::DeltaNet>),
     /// Gated DeltaNet bidirectional stack.
-    #[cfg(feature = "gated-deltanet")]
-    GatedDeltaNet(BidiLayers<crate::gated_deltanet::prelude::GatedDeltaNet>),
+    #[cfg(feature = "gated-deltanet-1")]
+    GatedDeltaNet1(BidiLayers<crate::gated_deltanet_1::prelude::GatedDeltaNet1>),
     /// DeltaProduct bidirectional stack.
     #[cfg(feature = "delta-product")]
     DeltaProduct(BidiLayers<crate::delta_product::prelude::DeltaProduct>),
     /// GDN-2 bidirectional stack.
-    #[cfg(feature = "gdn2")]
-    GatedDeltaNet2(BidiLayers<crate::gdn2::prelude::GatedDeltaNet2>),
+    #[cfg(feature = "gated-deltanet-2")]
+    GatedDeltaNet2(BidiLayers<crate::gated_deltanet_2::prelude::GatedDeltaNet2>),
 }
 
 impl DeltaBidiLayers {
@@ -59,11 +59,11 @@ impl DeltaBidiLayers {
         match self {
             #[cfg(feature = "deltanet")]
             Self::DeltaNet(layers) => bidi_forward(layers, x, caches, path, class),
-            #[cfg(feature = "gated-deltanet")]
-            Self::GatedDeltaNet(layers) => bidi_forward(layers, x, caches, path, class),
+            #[cfg(feature = "gated-deltanet-1")]
+            Self::GatedDeltaNet1(layers) => bidi_forward(layers, x, caches, path, class),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(layers) => bidi_forward(layers, x, caches, path, class),
-            #[cfg(feature = "gdn2")]
+            #[cfg(feature = "gated-deltanet-2")]
             Self::GatedDeltaNet2(layers) => bidi_forward(layers, x, caches, path, class),
         }
     }
@@ -120,12 +120,12 @@ pub enum DeltaBidiLayersConfig {
         block: crate::deltanet::prelude::DeltaNetConfig,
     },
     /// Build a Gated DeltaNet bidirectional stack.
-    #[cfg(feature = "gated-deltanet")]
-    GatedDeltaNet {
+    #[cfg(feature = "gated-deltanet-1")]
+    GatedDeltaNet1 {
         /// Stack-level knobs.
         shape: DeltaBidiShape,
         /// Block config.
-        block: crate::gated_deltanet::prelude::GatedDeltaNetConfig,
+        block: crate::gated_deltanet_1::prelude::GatedDeltaNet1Config,
     },
     /// Build a DeltaProduct bidirectional stack.
     #[cfg(feature = "delta-product")]
@@ -136,12 +136,12 @@ pub enum DeltaBidiLayersConfig {
         block: crate::delta_product::prelude::DeltaProductConfig,
     },
     /// Build a GDN-2 bidirectional stack.
-    #[cfg(feature = "gdn2")]
+    #[cfg(feature = "gated-deltanet-2")]
     GatedDeltaNet2 {
         /// Stack-level knobs.
         shape: DeltaBidiShape,
         /// Block config.
-        block: crate::gdn2::prelude::GatedDeltaNet2Config,
+        block: crate::gated_deltanet_2::prelude::GatedDeltaNet2Config,
     },
 }
 
@@ -153,15 +153,15 @@ impl DeltaBidiLayersConfig {
             Self::DeltaNet { shape, block } => {
                 DeltaBidiLayers::DeltaNet(shape.build(block.clone()).init(device))
             }
-            #[cfg(feature = "gated-deltanet")]
-            Self::GatedDeltaNet { shape, block } => {
-                DeltaBidiLayers::GatedDeltaNet(shape.build(block.clone()).init(device))
+            #[cfg(feature = "gated-deltanet-1")]
+            Self::GatedDeltaNet1 { shape, block } => {
+                DeltaBidiLayers::GatedDeltaNet1(shape.build(block.clone()).init(device))
             }
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct { shape, block } => {
                 DeltaBidiLayers::DeltaProduct(shape.build(block.clone()).init(device))
             }
-            #[cfg(feature = "gdn2")]
+            #[cfg(feature = "gated-deltanet-2")]
             Self::GatedDeltaNet2 { shape, block } => {
                 DeltaBidiLayers::GatedDeltaNet2(shape.build(block.clone()).init(device))
             }
@@ -174,11 +174,11 @@ impl DeltaBidiLayersConfig {
         let specs = match self {
             #[cfg(feature = "deltanet")]
             Self::DeltaNet { block, .. } => block.muon_projections(),
-            #[cfg(feature = "gated-deltanet")]
-            Self::GatedDeltaNet { block, .. } => block.muon_projections(),
+            #[cfg(feature = "gated-deltanet-1")]
+            Self::GatedDeltaNet1 { block, .. } => block.muon_projections(),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct { block, .. } => block.muon_projections(),
-            #[cfg(feature = "gdn2")]
+            #[cfg(feature = "gated-deltanet-2")]
             Self::GatedDeltaNet2 { block, .. } => block.muon_projections(),
         };
         burn_stack::optim::MuonPlan::new(specs)

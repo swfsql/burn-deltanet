@@ -23,12 +23,12 @@ use burn::prelude::*;
 use burn_stack::modules::sanity as san;
 
 // ---------------------------------------------------------------------------
-// GatedDeltaNetCache  (one layer)
+// GatedDeltaNet1Cache  (one layer)
 // ---------------------------------------------------------------------------
 
 /// The state carried between calls for a **single** DeltaNet layer.
 #[derive(Module, Debug)]
-pub struct GatedDeltaNetCache {
+pub struct GatedDeltaNet1Cache {
     /// Short-convolution rolling window, `[batch, conv_dim, conv_kernel]`.
     /// `None` iff the block runs without a convolution.
     pub conv_bwc: Option<Tensor<3>>,
@@ -38,7 +38,7 @@ pub struct GatedDeltaNetCache {
     pub state_bhkv: Tensor<4>,
 }
 
-impl GatedDeltaNetCache {
+impl GatedDeltaNet1Cache {
     /// Rebuild a cache from its two tensors.
     ///
     /// Used by the [`CacheStack`](burn_stack::modules::CacheStack) impl, which
@@ -60,9 +60,9 @@ impl GatedDeltaNetCache {
     }
 }
 
-/// Configuration / factory for a single [`GatedDeltaNetCache`].
+/// Configuration / factory for a single [`GatedDeltaNet1Cache`].
 #[derive(Config, Debug)]
-pub struct GatedDeltaNetCacheConfig {
+pub struct GatedDeltaNet1CacheConfig {
     /// Batch size.
     pub batch: usize,
     /// Number of heads.
@@ -77,14 +77,14 @@ pub struct GatedDeltaNetCacheConfig {
     pub conv_kernel: usize,
 }
 
-impl GatedDeltaNetCacheConfig {
+impl GatedDeltaNet1CacheConfig {
     /// Allocate zero-initialised cache tensors on `device`.
     ///
     /// Zero is the correct empty state on both counts: an all-zero convolution
     /// window is "no previous tokens", and `S = 0` is an associative memory
     /// that returns zero for every key.
-    pub fn init(&self, device: &Device) -> GatedDeltaNetCache {
-        GatedDeltaNetCache {
+    pub fn init(&self, device: &Device) -> GatedDeltaNet1Cache {
+        GatedDeltaNet1Cache {
             conv_bwc: (self.conv_kernel > 0).then(|| {
                 Tensor::zeros(
                     Shape::new([self.batch, self.conv_dim, self.conv_kernel]),
@@ -100,53 +100,53 @@ impl GatedDeltaNetCacheConfig {
 }
 
 // ---------------------------------------------------------------------------
-// GatedDeltaNetCaches  (one entry per virtual layer)
+// GatedDeltaNet1Caches  (one entry per virtual layer)
 // ---------------------------------------------------------------------------
 
 /// Per-layer caches for a complete Gated DeltaNet network — one slot per *virtual*
 /// layer, which may exceed the number of real weight sets.
 #[derive(Module, Debug)]
-pub struct GatedDeltaNetCaches {
+pub struct GatedDeltaNet1Caches {
     /// Per-layer caches.
-    pub caches: Vec<GatedDeltaNetCache>,
+    pub caches: Vec<GatedDeltaNet1Cache>,
 }
 
-impl GatedDeltaNetCaches {
+impl GatedDeltaNet1Caches {
     /// Number of per-layer caches.
     pub fn caches_len(&self) -> usize {
         self.caches.len()
     }
 
     /// Wrap a vector of per-layer caches.
-    pub fn from_vec(vec: Vec<GatedDeltaNetCache>) -> Self {
+    pub fn from_vec(vec: Vec<GatedDeltaNet1Cache>) -> Self {
         Self { caches: vec }
     }
 
     /// Wrap each per-layer cache in `Some` so the layer loop can `take` it
     /// without cloning (Burn tensors are reference-counted).
-    pub fn into_options(self) -> Vec<Option<GatedDeltaNetCache>> {
+    pub fn into_options(self) -> Vec<Option<GatedDeltaNet1Cache>> {
         self.caches.into_iter().map(Some).collect()
     }
 
     /// Inverse of [`Self::into_options`].
-    pub fn from_options(options: Vec<Option<GatedDeltaNetCache>>) -> Self {
+    pub fn from_options(options: Vec<Option<GatedDeltaNet1Cache>>) -> Self {
         Self::from_vec(options.into_iter().map(Option::unwrap).collect())
     }
 }
 
-/// Configuration / factory for [`GatedDeltaNetCaches`].
+/// Configuration / factory for [`GatedDeltaNet1Caches`].
 #[derive(Config, Debug)]
-pub struct GatedDeltaNetCachesConfig {
+pub struct GatedDeltaNet1CachesConfig {
     /// Number of cache slots (= virtual layers).
     pub n_real_caches: usize,
     /// Shape of each individual cache.
-    pub cache: GatedDeltaNetCacheConfig,
+    pub cache: GatedDeltaNet1CacheConfig,
 }
 
-impl GatedDeltaNetCachesConfig {
+impl GatedDeltaNet1CachesConfig {
     /// Allocate all cache tensors (zero-initialised) on `device`.
-    pub fn init(&self, device: &Device) -> GatedDeltaNetCaches {
-        GatedDeltaNetCaches {
+    pub fn init(&self, device: &Device) -> GatedDeltaNet1Caches {
+        GatedDeltaNet1Caches {
             caches: (0..self.n_real_caches)
                 .map(|_| self.cache.clone().init(device))
                 .collect(),

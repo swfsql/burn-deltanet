@@ -40,7 +40,7 @@ cargo bench                 # benches/layer.rs: single-block, three modes
   enabled by default). Each just enables the matching `burn/<backend>`; several may
   be compiled in at once and `Device::default()` resolves which to use (honouring
   `BURN_DEVICE`).
-- `deltanet`/`gated-deltanet`/`delta-product`/`autodiff`/`optim` are default-on;
+- `deltanet`/`gated-deltanet-1`/`delta-product`/`autodiff`/`optim` are default-on;
   `optim` (Muon parameter groups) implies `burn/optim`+`burn/std`.
   `cubecl`/`fusion` gate the per-backend impls on those backend families.
   `dev-f16`/`dev-simd`/`dev-autotune` are example/test conveniences.
@@ -96,9 +96,9 @@ src/
 ├─ deltanet/         DeltaNet: no forget gate (α ≡ 1)
 │  ├─ deltanet.rs    block + config (expand_k/expand_v parameterisation)
 │  └─ cache.rs       DeltaNetCache(s): conv window + state (bhkv)
-├─ gated_deltanet/   Gated DeltaNet: + the scalar forget gate
-│  ├─ gated_deltanet.rs  block + config (head_k_dim/expand_v, grouped values)
-│  └─ cache.rs       GatedDeltaNetCache(s)
+├─ gated_deltanet_1/   Gated DeltaNet: + the scalar forget gate
+│  ├─ gated_deltanet_1.rs  block + config (head_k_dim/expand_v, grouped values)
+│  └─ cache.rs       GatedDeltaNet1Cache(s)
 ├─ delta_product/    DeltaProduct: u Householder factors per transition
 │  ├─ delta_product.rs   block + config; q on the last micro-step, α on the first
 │  └─ cache.rs       DeltaProductCache(s) — same size as the others
@@ -128,7 +128,7 @@ starting-off searching from `files.md`.
 
 All three families share **one** set of generic composition types, which live in
 `burn-stack` and are parameterised by the core block `M`
-(`DeltaNet`/`GatedDeltaNet`/`DeltaProduct`):
+(`DeltaNet`/`GatedDeltaNet1`/`DeltaProduct`):
 
 ```text
 VocabNetwork<M>   embedding → Layers<M> → final RMSNorm → LM head → logits
@@ -312,3 +312,4 @@ the **composition layer** (`../burn-stack/`); **Burn** (`../burn/`).
 
 - `rg`: available.
 - `cargo fmt`: don't use.
+- Prefer using the file editing tool to edit files. Use python scripts for editing iff there are procedural benefits.

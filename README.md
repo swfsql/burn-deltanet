@@ -112,8 +112,8 @@ burn-deltanet = { git = "https://github.com/swfsql/burn-deltanet.git", default-f
 A backend must be selected by feature: `backend-{flex,cpu,wgpu,webgpu,metal,`
 `vulkan,cuda,rocm,tch-cpu,tch-gpu,remote,ndarray}`. Several may be compiled in
 at once; `Device::default()` resolves which to use at runtime (honouring
-`BURN_DEVICE`). The families are features too — `deltanet`, `gated-deltanet`,
-`delta-product`, `gdn2` — all on by default.
+`BURN_DEVICE`). The families are features too — `deltanet`, `gated-deltanet-1`,
+`gated-deltanet-2`, `delta-product` — all on by default.
 
 ## Quick start
 
@@ -124,7 +124,7 @@ use burn_deltanet::prelude::*;
 let device = Device::default();
 
 // A block on its own.
-let block = GatedDeltaNetConfig::new(256)
+let block = GatedDeltaNet1Config::new(256)
     .with_nheads(4)
     .with_head_k_dim(64)
     .init(&device);
@@ -146,7 +146,7 @@ use burn_stack::modules::{LayersBuilder, VocabNetworkBuilder};
 let net = VocabNetworkBuilder {
     vocab_size: 32_000,
     pad_vocab_size_multiple: 8,
-    layers: LayersBuilder::new(12, GatedDeltaNetConfig::new(768)),
+    layers: LayersBuilder::new(12, GatedDeltaNet1Config::new(768)),
     missing_lm_head: true,
 }
 .init(&device);
@@ -189,9 +189,11 @@ parallelise it. The win is entirely intra-chunk.
 
 See [`examples/README.md`](examples/README.md).
 
-Two minimal examples, each pairing its task with a control that turns the new
-capability off. Both run on a six-scalar state, and both carry a hand-built
-exact solution in `tests.rs` — every weight in closed form from the recurrence:
+The `register-*` ladder is two minimal examples, each pairing its task with a
+control that turns the new capability off. Both run on a six-scalar state, and
+both carry a hand-built exact solution in `tests.rs` — every weight in closed
+form from the recurrence; one [`register/README.md`](examples/register/README.md)
+covers both:
 
 ```bash
 # the delta rule: a keyed write that *erases*, against gated linear attention
@@ -201,6 +203,13 @@ cargo run --release --example register-majority --features backend-flex
 cargo run --release --example register-carousel --features backend-flex
 cargo run --release --example register-carousel --features backend-flex -- --turn swap
 cargo run --release --example register-carousel --features backend-flex -- --factors 1
+```
+
+Then one example on a real dataset, with nothing hand-built: a small GDN-2
+classifier reading each MNIST digit as a 784-pixel sequence.
+
+```bash
+cargo run --release --example mnist-class --features backend-flex -- --training --inference
 ```
 
 ## Benchmarks

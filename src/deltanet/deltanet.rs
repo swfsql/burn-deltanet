@@ -27,7 +27,7 @@
 //!   disturbed. That bounded, targeted overwrite is what the associative-recall
 //!   results rest on.
 //! - **There is no decay.** `α ≡ 1`, so the state is only ever changed
-//!   *deliberately*, by a write. [Gated DeltaNet](crate::gated_deltanet) adds
+//!   *deliberately*, by a write. [Gated DeltaNet](crate::gated_deltanet_1) adds
 //!   the scalar forget gate back; that is the entire difference between the two
 //!   families.
 //!

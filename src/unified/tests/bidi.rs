@@ -7,7 +7,7 @@ use burn_stack::modules::OutputMergeConfig;
 use burn_stack::utils::test_helpers::max_abs_diff;
 
 fn config(d_model: usize, merge: OutputMergeConfig) -> DeltaBidiLayersConfig {
-    DeltaBidiLayersConfig::GatedDeltaNet {
+    DeltaBidiLayersConfig::GatedDeltaNet1 {
         shape: DeltaBidiShape::new(4, vec![merge.clone(), merge]),
         block: tiny_block(d_model),
     }

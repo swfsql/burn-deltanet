@@ -23,7 +23,7 @@
 //! transformations of a `u`-dimensional subspace — every element of `O(u)` is
 //! such a product, by the Cartan–Dieudonné theorem. So `u` is a direct dial on
 //! how much group structure one transition can track, at `u`× the recurrence
-//! work and no extra state. `u = 1` *is* [Gated DeltaNet](crate::gated_deltanet)
+//! work and no extra state. `u = 1` *is* [Gated DeltaNet](crate::gated_deltanet_1)
 //! — exactly, not approximately, which the test suite asserts by running the
 //! two from one set of weights.
 //!
@@ -338,7 +338,7 @@ pub struct DeltaProductConfig {
     pub d_model: usize,
 
     /// Householder factors per transition. `1` is
-    /// [Gated DeltaNet](crate::gated_deltanet) exactly.
+    /// [Gated DeltaNet](crate::gated_deltanet_1) exactly.
     #[config(default = 2)]
     pub n_householder: usize,
 

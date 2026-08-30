@@ -2,28 +2,28 @@
 
 #### List of Examples:
 
-- `register-majority`: One DeltaNet block (a three-row register file, six state scalars, no conv, no residual) on the majority of what those registers currently hold — the smallest task the block's *keyed, erasing* write is required for. Its README carries a hand-built exact solution and a sweep showing no accumulating state (the erase gate pinned at zero, i.e. gated linear attention) reaches it.
-- `register-carousel`: The DeltaProduct rung above it — the same register file plus a `turn` instruction that permutes it, so the transition has to be a *permutation matrix*. `-- --turn swap` is a transposition, which one Householder reaches once `β` may reach 2; the default `rotate` is a 3-cycle, whose complex eigenvalues no single real Householder has. Hand-built exact solutions for both, plus sweeps over every single Householder.
+- `register-*`: A two-rung ladder on the same three-register file (six state scalars, no conv, no residual), each rung the smallest task its block is *needed* for and that the rung below cannot solve: `register-majority` (the delta rule's *keyed, erasing* write, against an accumulating state) and `register-carousel` (DeltaProduct's second Householder factor, against a 3-cycle no single real reflection reaches). Each carries a hand-built exact solution and the sweeps that wall off the rung below; the single [`register/README.md`](register/README.md) covers both.
+- `mnist-class`: A small GDN-2 model classifying MNIST digits read as 784-pixel sequences — the one example on a real dataset, with nothing hand-built. 2 real layers cycled to 16 virtual ones under a `GradHorizon::Depth(2)` truncated-BPTT cut.
 
 #### Examples Structure
 
-Each example defines a model in `model.rs`, a dataset in `dataset.rs`, a training procedure in `training.rs`, an inference procedure in `inference.rs`, a launching procedure in `main.rs`, and the claims it makes in `tests.rs`.
+Each example lives in its own directory (the `register-*` ladder one level deeper, under `register/`, sharing one README — those two are declared as explicit `[[example]]` targets in `Cargo.toml`, since cargo only autodiscovers `examples/<name>/main.rs`). An example defines a model in `model.rs`, a dataset (if applicable) in `dataset.rs`, a training procedure in `training.rs`, an inference procedure in `inference.rs`, a launching procedure in `main.rs`, and the claims it makes (if any) in `tests.rs`.
 
 The launching procedure first parses the basic command arguments, which set whether training and/or inference should run. Training validates every few epochs, and each example's README states what the training goal is. The `model.rs` also documents why the model is shaped the way it is.
 
-There are shared definitions in `common/mod.rs`, imported as an outside module by each example. A common model-factory seam and the backend selection are shared among all examples.
+There are shared definitions in `common/mod.rs`, imported as an outside module by each example. It is a thin shim: the CLI, the runtime device selection, the training config and the sequential-MNIST dataset all live in **`burn_stack::examples`** (feature `examples-common`, dev-only), shared verbatim with `burn-mamba`, and the `config → module` seam is `burn_stack::modules::ModelConfigExt`, implemented by this crate's network configs. `common/mod.rs` re-exports those under the `common::*` paths and adds `ARTIFACT_PREFIX`, which has to be expanded in the example crate.
 
 ##### Model Definition
 
-The network used throughout the examples is the lib-generic `DeltaLatentNet` (configured via `DeltaLatentNetConfig`), defined in `burn-deltanet`'s `src/unified/network.rs`. It is a continuous-I/O network: input and output projections (linear layers) around a generic `Layers<M>` stack, where `M` is the chosen delta-rule block (`DeltaNet`/`GatedDeltaNet`/`DeltaProduct`/`GatedDeltaNet2`). `common/model.rs` only supplies the `ModelConfigExt` glue (config → `Module`); examples define no network types of their own.
+The network used throughout the examples is the lib-generic `DeltaLatentNet` (configured via `DeltaLatentNetConfig`), defined in `burn-deltanet`'s `src/unified/network.rs`. It is a continuous-I/O network: input and output projections (linear layers) around a generic `Layers<M>` stack, where `M` is the chosen delta-rule block (`DeltaNet`/`GatedDeltaNet1`/`DeltaProduct`/`GatedDeltaNet2`). `ModelConfigExt` (config → `Module`, plus the Muon plan) is implemented on those configs in `src/unified/network.rs`; examples define no network types of their own.
 
 ##### Tests
 
-Every example's `tests.rs` is the example's argument, measured. Each one builds its model **by hand** — every weight in closed form from the recurrence, nothing fitted — to establish that the block can solve the task a priori, then re-runs that same construction with one knob changed to establish that a weaker block cannot. The sweeps are over real blocks rather than simulations, so what they bound is what this crate actually computes.
+Every `register-*` example's `tests.rs` is the example's argument, measured. Each one builds its model **by hand** — every weight in closed form from the recurrence, nothing fitted — to establish that the block can solve the task a priori, then re-runs that same construction with one knob changed to establish that a weaker block cannot. The sweeps are over real blocks rather than simulations, so what they bound is what this crate actually computes.
 
 ##### Optimizer
 
-`common/training.rs` defines `OptimizerConfig { adamw, muon }`, held by `TrainingConfig`. `muon = None` (the default) is plain AdamW on every parameter. Setting `muon` moves the hidden weight matrices to [Muon](https://kellerjordan.github.io/posts/muon/), driven by the model config's `muon_plan()` (`ModelConfigExt::muon_plan`, backed by `burn_stack::optim`): Muon only ever gets rank-2 hidden matrices, and each fused projection is split into its independent sub-projections first, so the orthogonalisation is per linear map rather than per allocation. These two examples are far too small for it to matter, and leave it off.
+`burn_stack::examples::training` defines `OptimizerConfig { adamw, muon }`, held by `TrainingConfig`. `muon = None` (the default) is plain AdamW on every parameter. Setting `muon` moves the hidden weight matrices to [Muon](https://kellerjordan.github.io/posts/muon/), driven by the model config's `muon_plan()` (`ModelConfigExt::muon_plan`, backed by `burn_stack::optim`): Muon only ever gets rank-2 hidden matrices, and each fused projection is split into its independent sub-projections first, so the orthogonalisation is per linear map rather than per allocation. The `register-*` examples are far too small for it to matter and leave it off; `mnist-class` exposes it as a `-- --muon` flag.
 
 #### Backend Selection
 
@@ -32,7 +32,7 @@ If no backend is selected, you should get a compile error message.
 
 #### Examples CLI
 
-All examples use a CLI defined in `common/cli.rs`.
+All examples use a CLI defined in `burn_stack::examples::cli`, re-exported as `common::cli`.
 
 ##### Usage Example
 
@@ -54,7 +54,7 @@ TCONFIG="/some/path/training_config.json"
 cargo run --example register-majority --features "backend-flex" -- --training --artifacts-path "$ARTIFACTS" --training-config "$TCONFIG"
 ```
 
-Downstream flags go after a trailing `--`; `register-carousel` takes `--turn rotate|swap` and `--factors N`.
+Downstream flags go after a trailing `--`; `register-carousel` takes `--turn rotate|swap` and `--factors N`, and `mnist-class` takes `--muon`.
 
 ##### CLI Help Message
 

@@ -61,7 +61,7 @@ pub mod training;
 pub mod tests;
 
 /// Shared example infrastructure (included by path).
-#[path = "../common/mod.rs"]
+#[path = "../../common/mod.rs"]
 pub mod common;
 
 use dataset::Turn;
@@ -147,6 +147,6 @@ fn flag(extra_args: &[OsString], name: &str) -> Option<String> {
 }
 
 fn main() {
-    let app_args = AppArgs::parse().unwrap();
+    let app_args = AppArgs::parse(common::ARTIFACT_PREFIX).unwrap();
     launch(&app_args);
 }

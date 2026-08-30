@@ -80,7 +80,7 @@ impl DeltaPath {
 ///
 /// The three gates are carried at their **broadcast** width: their last axis is
 /// either `1` (one value per head — a scalar `β`, a scalar `α`) or the full
-/// `head_k_dim` / `head_v_dim` (one value per channel — [GDN-2](crate::gdn2)).
+/// `head_k_dim` / `head_v_dim` (one value per channel — [GDN-2](crate::gated_deltanet_2)).
 /// The two are the same function: a per-head `β` *is* `erase = β·1_k`,
 /// `write = β·1_v`, and every expression below broadcasts over the axis without
 /// branching. Only the [chunked](super::chunk) path looks at the width, because

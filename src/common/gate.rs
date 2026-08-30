@@ -17,9 +17,9 @@
 //!   rather than all at one. Which head ends up fast and which slow is then
 //!   learned, but the spread is there from step zero.
 //!
-//! Shared by [Gated DeltaNet](crate::gated_deltanet) and
+//! Shared by [Gated DeltaNet](crate::gated_deltanet_1) and
 //! [DeltaProduct](crate::delta_product); [DeltaNet](crate::deltanet) has no
-//! gate at all, and [GDN-2](crate::gdn2) widens it onto the key channels with
+//! gate at all, and [GDN-2](crate::gated_deltanet_2) widens it onto the key channels with
 //! [`ChannelForgetGate`].
 
 use burn::module::{Module, Param};
@@ -127,7 +127,7 @@ impl ForgetGateConfig {
 
 /// The same decay, one value per **key channel** instead of one per head.
 ///
-/// [GDN-2](crate::gdn2) (following KDA) gives every row of the state its own
+/// [GDN-2](crate::gated_deltanet_2) (following KDA) gives every row of the state its own
 /// timescale, so `Δ` must be projected at `nheads · head_k_dim` width. At the
 /// deployed shape that equals `d_model`, which would make a dense `d_model →
 /// key_dim` map as large as the rest of the block put together — so the

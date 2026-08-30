@@ -25,7 +25,7 @@ use super::path::DeltaInput;
 /// With a per-head `β` — `erase = write = β`, both of width 1 — that reads
 /// `u = β (v − S⁻ᵀ k)`, the scalar delta rule verbatim. Widening the gates onto
 /// their channel axes decouples the two halves of the write, which is what
-/// [GDN-2](crate::gdn2) is.
+/// [GDN-2](crate::gated_deltanet_2) is.
 ///
 /// `q`/`k` are expected already activated and normalised; `scale` is applied
 /// here so the caller does not have to.

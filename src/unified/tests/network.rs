@@ -9,7 +9,7 @@ use crate::unified::{
 use burn_stack::utils::test_helpers::max_abs_diff;
 
 fn latent_config(d_model: usize, io: usize) -> DeltaLatentNetConfig {
-    DeltaLatentNetConfig::GatedDeltaNet {
+    DeltaLatentNetConfig::GatedDeltaNet1 {
         shape: DeltaLatentShape::new(io, io, DeltaNetworkShape::new(2)).with_final_norm(true),
         block: tiny_block(d_model),
     }
@@ -47,7 +47,7 @@ fn a_latent_network_keeps_forward_step_parity() {
 fn a_vocab_network_keeps_forward_step_parity() {
     let device: Device = Default::default();
     let (batch, sequence, d_model, vocab) = (2, 7, 16, 11);
-    let net = DeltaVocabNetConfig::GatedDeltaNet {
+    let net = DeltaVocabNetConfig::GatedDeltaNet1 {
         shape: DeltaVocabShape::new(vocab, DeltaNetworkShape::new(2)),
         block: tiny_block(d_model),
     }
@@ -95,7 +95,7 @@ fn every_family_builds_and_runs_through_the_runtime_enum() {
         ),
         (
             "Gated DeltaNet",
-            DeltaLatentNetConfig::GatedDeltaNet {
+            DeltaLatentNetConfig::GatedDeltaNet1 {
                 shape: shape(),
                 block: tiny_block(d_model),
             },
@@ -114,7 +114,7 @@ fn every_family_builds_and_runs_through_the_runtime_enum() {
             "GDN-2",
             DeltaLatentNetConfig::GatedDeltaNet2 {
                 shape: shape(),
-                block: crate::gdn2::prelude::GatedDeltaNet2Config::new(d_model)
+                block: crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(d_model)
                     .with_nheads(2)
                     .with_head_k_dim(4),
             },

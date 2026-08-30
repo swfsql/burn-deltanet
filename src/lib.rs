@@ -57,11 +57,11 @@
 //! (`Network` → `Layers` → `Layer` → `Block`):
 //!
 //! - [`deltanet`] — DeltaNet: no forget gate (`α ≡ 1`).
-//! - [`gated_deltanet`] — Gated DeltaNet: adds the Mamba-2-style scalar decay
+//! - [`gated_deltanet_1`] — Gated DeltaNet: adds the Mamba-2-style scalar decay
 //!   `αₜ = exp(Δₜ A)`.
 //! - [`delta_product`] — DeltaProduct: `n_householder` delta-rule micro-steps
 //!   per token, i.e. a *product* of Householder transitions per transition.
-//! - [`gdn2`] — GDN-2: Gated DeltaNet with the erase and write halves of the
+//! - [`gated_deltanet_2`] — GDN-2: Gated DeltaNet with the erase and write halves of the
 //!   update decoupled into independent channel-wise gates.
 //!
 //! Everything *around* the block — the Pre-LN [`Layer`](burn_stack::modules::Layer),
@@ -79,7 +79,7 @@
 //! use burn_deltanet::prelude::*;
 //!
 //! let device = Device::default();
-//! let block = GatedDeltaNetConfig::new(64)
+//! let block = GatedDeltaNet1Config::new(64)
 //!     .with_nheads(2)
 //!     .with_head_k_dim(16)
 //!     .init(&device);
@@ -116,10 +116,10 @@ pub mod delta;
 pub mod delta_product;
 #[cfg(feature = "deltanet")]
 pub mod deltanet;
-#[cfg(feature = "gated-deltanet")]
-pub mod gated_deltanet;
-#[cfg(feature = "gdn2")]
-pub mod gdn2;
+#[cfg(feature = "gated-deltanet-1")]
+pub mod gated_deltanet_1;
+#[cfg(feature = "gated-deltanet-2")]
+pub mod gated_deltanet_2;
 
 pub mod unified;
 
@@ -132,14 +132,14 @@ pub mod prelude {
     #[cfg(feature = "deltanet")]
     pub use crate::deltanet::{self, prelude::*};
 
-    #[cfg(feature = "gated-deltanet")]
-    pub use crate::gated_deltanet::{self, prelude::*};
+    #[cfg(feature = "gated-deltanet-1")]
+    pub use crate::gated_deltanet_1::{self, prelude::*};
 
     #[cfg(feature = "delta-product")]
     pub use crate::delta_product::{self, prelude::*};
 
-    #[cfg(feature = "gdn2")]
-    pub use crate::gdn2::{self, prelude::*};
+    #[cfg(feature = "gated-deltanet-2")]
+    pub use crate::gated_deltanet_2::{self, prelude::*};
 
     // The runtime-selectable unified API (this crate).
     pub use crate::unified::{

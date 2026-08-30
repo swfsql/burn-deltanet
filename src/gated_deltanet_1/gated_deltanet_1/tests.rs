@@ -8,8 +8,8 @@ use burn_stack::utils::test_helpers::max_abs_diff;
 
 type Device = burn::prelude::Device;
 
-fn tiny_config(d_model: usize) -> GatedDeltaNetConfig {
-    GatedDeltaNetConfig::new(d_model)
+fn tiny_config(d_model: usize) -> GatedDeltaNet1Config {
+    GatedDeltaNet1Config::new(d_model)
         .with_nheads(2)
         .with_head_k_dim(8)
         .with_expand_v(1.0)
@@ -24,10 +24,10 @@ fn random_input(batch: usize, sequence: usize, d_model: usize, device: &Device) 
 }
 
 fn unroll_steps(
-    block: &GatedDeltaNet,
+    block: &GatedDeltaNet1,
     input_bsd: Tensor<3>,
-    cache: Option<GatedDeltaNetCache>,
-) -> (Tensor<3>, GatedDeltaNetCache) {
+    cache: Option<GatedDeltaNet1Cache>,
+) -> (Tensor<3>, GatedDeltaNet1Cache) {
     let [_batch, sequence, _d_model] = input_bsd.dims();
     let mut cache = cache;
     let mut outputs = Vec::with_capacity(sequence);
@@ -41,8 +41,8 @@ fn unroll_steps(
 }
 
 fn assert_caches_match(
-    a: &GatedDeltaNetCache,
-    b: &GatedDeltaNetCache,
+    a: &GatedDeltaNet1Cache,
+    b: &GatedDeltaNet1Cache,
     label: &str,
     tol: f32,
 ) {
@@ -59,7 +59,7 @@ fn assert_caches_match(
 }
 
 fn check_forward_matches_step(
-    config: GatedDeltaNetConfig,
+    config: GatedDeltaNet1Config,
     sequence: usize,
     path: DeltaPath,
     tol: f32,

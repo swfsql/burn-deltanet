@@ -150,8 +150,8 @@ Every block exposes `forward(x_bsd, cache, path)`, `step(x_bd, cache)`,
 - `g_bsh: None` at the `DeltaInput` — that is the whole difference from Gated
   DeltaNet.
 
-### `src/gated_deltanet/gated_deltanet.rs`
-- `GatedDeltaNet { qkv, gate: ForgetGate, norm, out_proj }`, `GatedDeltaNetConfig`.
+### `src/gated_deltanet_1/gated_deltanet_1.rs`
+- `GatedDeltaNet1 { qkv, gate: ForgetGate, norm, out_proj }`, `GatedDeltaNet1Config`.
 - Parameterised by `head_k_dim` + `expand_v` + `n_value_heads` (grouped values).
 - The gate's raw `Δ` rides in the fused projection as its `extra_channels`
   segment.
@@ -176,7 +176,7 @@ Module header: what the runtime enums are for, and what Muon does and does not
 see. Declares the submodules and re-exports.
 
 ### `cache.rs`
-- `DeltaCaches { DeltaNet, GatedDeltaNet, DeltaProduct }` (plain runtime state,
+- `DeltaCaches { DeltaNet, GatedDeltaNet1, DeltaProduct }` (plain runtime state,
   not a `Module`) + `family_name()`, `slot_count()`.
 - `impl_block_for_family!` — one macro emitting `CacheStack`, `Block` and
   `BlockConfig` for all three families. They differ in what they *project*, not

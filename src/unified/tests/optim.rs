@@ -37,7 +37,7 @@ fn deltanet_seams_match_its_projection() {
 }
 
 #[test]
-fn gated_deltanet_seams_match_its_projection() {
+fn gated_deltanet_1_seams_match_its_projection() {
     let device: Device = Default::default();
     for n_value_heads in [0, 4] {
         let config = tiny_block(16).with_n_value_heads(n_value_heads);
@@ -70,7 +70,7 @@ fn gdn2_seams_match_its_projection() {
     let device: Device = Default::default();
     for n_value_heads in [0, 4] {
         for use_gate in [true, false] {
-            let config = crate::gdn2::prelude::GatedDeltaNet2Config::new(16)
+            let config = crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(16)
                 .with_nheads(2)
                 .with_head_k_dim(4)
                 .with_n_value_heads(n_value_heads)
@@ -87,7 +87,7 @@ fn gdn2_seams_match_its_projection() {
 /// bottlenecks' second factors are separate weights and are claimed whole.
 #[test]
 fn gdn2_puts_every_seam_on_muon() {
-    let config = crate::gdn2::prelude::GatedDeltaNet2Config::new(16)
+    let config = crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(16)
         .with_nheads(2)
         .with_head_k_dim(4);
     let specs = config.muon_projections();
@@ -159,7 +159,7 @@ fn delta_product_lists_each_householder_map_separately() {
 #[test]
 fn the_plan_describes_a_built_network() {
     let device: Device = Default::default();
-    let config = DeltaLatentNetConfig::GatedDeltaNet {
+    let config = DeltaLatentNetConfig::GatedDeltaNet1 {
         shape: DeltaLatentShape::new(5, 5, DeltaNetworkShape::new(2)),
         block: tiny_block(16),
     };

@@ -52,10 +52,10 @@ macro_rules! impl_family {
 
 #[cfg(feature = "deltanet")]
 impl_family!(crate::deltanet::prelude::DeltaNet, DeltaNet, "DeltaNet");
-#[cfg(feature = "gated-deltanet")]
+#[cfg(feature = "gated-deltanet-1")]
 impl_family!(
-    crate::gated_deltanet::prelude::GatedDeltaNet,
-    GatedDeltaNet,
+    crate::gated_deltanet_1::prelude::GatedDeltaNet1,
+    GatedDeltaNet1,
     "Gated DeltaNet"
 );
 #[cfg(feature = "delta-product")]
@@ -64,9 +64,9 @@ impl_family!(
     DeltaProduct,
     "DeltaProduct"
 );
-#[cfg(feature = "gdn2")]
+#[cfg(feature = "gated-deltanet-2")]
 impl_family!(
-    crate::gdn2::prelude::GatedDeltaNet2,
+    crate::gated_deltanet_2::prelude::GatedDeltaNet2,
     GatedDeltaNet2,
     "GDN-2"
 );

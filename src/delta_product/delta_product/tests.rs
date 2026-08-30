@@ -187,15 +187,15 @@ fn forward_and_step_agree_on_parameter_gradients() {
 /// One Householder factor per transition *is* Gated DeltaNet — not an
 /// approximation of it. The two blocks have the same parameter shapes in the
 /// same order at `u = 1`, so one set of weights can be run through both.
-#[cfg(feature = "gated-deltanet")]
+#[cfg(feature = "gated-deltanet-1")]
 #[test]
-fn one_householder_is_gated_deltanet() {
-    use crate::gated_deltanet::prelude::{GatedDeltaNet, GatedDeltaNetConfig};
+fn one_householder_is_gated_deltanet_1() {
+    use crate::gated_deltanet_1::prelude::{GatedDeltaNet1, GatedDeltaNet1Config};
 
     let device: Device = Default::default();
     let (batch, sequence, d_model) = (2, 9, 16);
 
-    let gated: GatedDeltaNet = GatedDeltaNetConfig::new(d_model)
+    let gated: GatedDeltaNet1 = GatedDeltaNet1Config::new(d_model)
         .with_nheads(2)
         .with_head_k_dim(8)
         .with_expand_v(1.0)

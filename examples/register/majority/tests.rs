@@ -8,7 +8,7 @@
 //!
 //! The second claim is measured on a real block, not a simulation: GDN-2 is the
 //! family in this crate whose erase and write gates are *independent*
-//! ([`crate::common`] aside, see `burn_deltanet::gdn2`), so forcing its erase
+//! ([`crate::common`] aside, see `burn_deltanet::gated_deltanet_2`), so forcing its erase
 //! gate to zero leaves exactly `Sₜ = diag(α) Sₜ₋₁ + kₜ (w ⊙ vₜ)ᵀ` — gated
 //! linear attention, with `α` free to be swept.
 //!

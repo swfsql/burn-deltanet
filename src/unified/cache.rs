@@ -23,14 +23,14 @@ pub enum DeltaCaches {
     #[cfg(feature = "deltanet")]
     DeltaNet(crate::deltanet::prelude::DeltaNetCaches),
     /// Gated DeltaNet caches.
-    #[cfg(feature = "gated-deltanet")]
-    GatedDeltaNet(crate::gated_deltanet::prelude::GatedDeltaNetCaches),
+    #[cfg(feature = "gated-deltanet-1")]
+    GatedDeltaNet1(crate::gated_deltanet_1::prelude::GatedDeltaNet1Caches),
     /// DeltaProduct caches.
     #[cfg(feature = "delta-product")]
     DeltaProduct(crate::delta_product::prelude::DeltaProductCaches),
     /// GDN-2 caches.
-    #[cfg(feature = "gdn2")]
-    GatedDeltaNet2(crate::gdn2::prelude::GatedDeltaNet2Caches),
+    #[cfg(feature = "gated-deltanet-2")]
+    GatedDeltaNet2(crate::gated_deltanet_2::prelude::GatedDeltaNet2Caches),
 }
 
 /// Emit the four impls a family owes the stack.
@@ -139,18 +139,18 @@ mod impl_deltanet {
     }
 }
 
-#[cfg(feature = "gated-deltanet")]
-mod impl_gated_deltanet {
+#[cfg(feature = "gated-deltanet-1")]
+mod impl_gated_deltanet_1 {
     use super::*;
-    use crate::gated_deltanet::prelude::{
-        GatedDeltaNet, GatedDeltaNetCache, GatedDeltaNetCaches, GatedDeltaNetConfig,
+    use crate::gated_deltanet_1::prelude::{
+        GatedDeltaNet1, GatedDeltaNet1Cache, GatedDeltaNet1Caches, GatedDeltaNet1Config,
     };
 
     impl_block_for_family! {
-        block: GatedDeltaNet,
-        config: GatedDeltaNetConfig,
-        cache: GatedDeltaNetCache,
-        caches: GatedDeltaNetCaches,
+        block: GatedDeltaNet1,
+        config: GatedDeltaNet1Config,
+        cache: GatedDeltaNet1Cache,
+        caches: GatedDeltaNet1Caches,
     }
 }
 
@@ -169,10 +169,10 @@ mod impl_delta_product {
     }
 }
 
-#[cfg(feature = "gdn2")]
+#[cfg(feature = "gated-deltanet-2")]
 mod impl_gdn2 {
     use super::*;
-    use crate::gdn2::prelude::{
+    use crate::gated_deltanet_2::prelude::{
         GatedDeltaNet2, GatedDeltaNet2Cache, GatedDeltaNet2Caches, GatedDeltaNet2Config,
     };
 
@@ -190,11 +190,11 @@ impl DeltaCaches {
         match self {
             #[cfg(feature = "deltanet")]
             Self::DeltaNet(_) => "DeltaNet",
-            #[cfg(feature = "gated-deltanet")]
-            Self::GatedDeltaNet(_) => "Gated DeltaNet",
+            #[cfg(feature = "gated-deltanet-1")]
+            Self::GatedDeltaNet1(_) => "Gated DeltaNet",
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(_) => "DeltaProduct",
-            #[cfg(feature = "gdn2")]
+            #[cfg(feature = "gated-deltanet-2")]
             Self::GatedDeltaNet2(_) => "GDN-2",
         }
     }
@@ -204,11 +204,11 @@ impl DeltaCaches {
         match self {
             #[cfg(feature = "deltanet")]
             Self::DeltaNet(c) => c.caches_len(),
-            #[cfg(feature = "gated-deltanet")]
-            Self::GatedDeltaNet(c) => c.caches_len(),
+            #[cfg(feature = "gated-deltanet-1")]
+            Self::GatedDeltaNet1(c) => c.caches_len(),
             #[cfg(feature = "delta-product")]
             Self::DeltaProduct(c) => c.caches_len(),
-            #[cfg(feature = "gdn2")]
+            #[cfg(feature = "gated-deltanet-2")]
             Self::GatedDeltaNet2(c) => c.caches_len(),
         }
     }

@@ -1,7 +1,7 @@
 //! # GDN-2 — the delta rule with erase and write decoupled
 //!
 //! *Gated DeltaNet-2: Decoupling Erase and Write in Linear Attention*. The
-//! block is [Gated DeltaNet](crate::gated_deltanet) with every one of its
+//! block is [Gated DeltaNet](crate::gated_deltanet_1) with every one of its
 //! per-head gates widened onto a channel axis:
 //!
 //! ```text
@@ -60,7 +60,7 @@ use crate::common::norm::{OutNorm, QkActivation, QkNorm};
 use crate::common::qkv::{QkvProjection, QkvProjectionConfig, WriteGate};
 use crate::delta::path::{DeltaInput, DeltaPath};
 use crate::delta::recurrent::delta_step;
-use crate::gdn2::cache::{
+use crate::gated_deltanet_2::cache::{
     GatedDeltaNet2Cache, GatedDeltaNet2CacheConfig, GatedDeltaNet2Caches,
     GatedDeltaNet2CachesConfig,
 };
@@ -309,7 +309,7 @@ impl GatedDeltaNet2 {
 
 /// Hyperparameters for [`GatedDeltaNet2`].
 ///
-/// Parameterised as [Gated DeltaNet](crate::gated_deltanet::gated_deltanet::GatedDeltaNetConfig)
+/// Parameterised as [Gated DeltaNet](crate::gated_deltanet_1::gated_deltanet_1::GatedDeltaNet1Config)
 /// is — an explicit `head_k_dim` and head count with the value width as an
 /// expansion of it — plus [`Self::bottleneck`], the rank shared by the `Δ` and
 /// output-gate projections.

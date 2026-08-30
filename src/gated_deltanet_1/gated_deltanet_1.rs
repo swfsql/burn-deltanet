@@ -53,12 +53,12 @@ use crate::common::norm::{OutNorm, QkActivation, QkNorm};
 use crate::common::qkv::{QkvProjection, QkvProjectionConfig, WriteGate};
 use crate::delta::path::{DeltaInput, DeltaPath};
 use crate::delta::recurrent::delta_step;
-use crate::gated_deltanet::cache::{
-    GatedDeltaNetCache, GatedDeltaNetCacheConfig, GatedDeltaNetCaches, GatedDeltaNetCachesConfig,
+use crate::gated_deltanet_1::cache::{
+    GatedDeltaNet1Cache, GatedDeltaNet1CacheConfig, GatedDeltaNet1Caches, GatedDeltaNet1CachesConfig,
 };
 
 // ---------------------------------------------------------------------------
-// GatedDeltaNet  (the block)
+// GatedDeltaNet1  (the block)
 // ---------------------------------------------------------------------------
 
 /// The Gated DeltaNet block.
@@ -66,7 +66,7 @@ use crate::gated_deltanet::cache::{
 /// - [`Self::forward`] — chunkwise, for training and prefill.
 /// - [`Self::step`] — recurrent, for token-by-token decoding.
 #[derive(Module, Debug)]
-pub struct GatedDeltaNet {
+pub struct GatedDeltaNet1 {
     /// Fused `[q | k | v | β | gate? | Δ_raw]` projection, short convolution,
     /// QK-norm. The trailing `extra` segment is the forget gate's `Δ`.
     pub qkv: QkvProjection,
@@ -81,7 +81,7 @@ pub struct GatedDeltaNet {
     pub out_proj: Linear,
 }
 
-impl GatedDeltaNet {
+impl GatedDeltaNet1 {
     /// Number of heads the recurrent state carries (the *value* head count).
     pub fn nheads(&self) -> usize {
         self.qkv.state_heads()
@@ -114,10 +114,10 @@ impl GatedDeltaNet {
         batch: usize,
         n_virtual: usize,
         device: &Device,
-    ) -> GatedDeltaNetCaches {
-        GatedDeltaNetCachesConfig::new(
+    ) -> GatedDeltaNet1Caches {
+        GatedDeltaNet1CachesConfig::new(
             n_virtual,
-            GatedDeltaNetCacheConfig {
+            GatedDeltaNet1CacheConfig {
                 batch,
                 nheads: self.nheads(),
                 head_k_dim: self.head_k_dim(),
@@ -129,8 +129,8 @@ impl GatedDeltaNet {
         .init(device)
     }
 
-    fn zero_cache(&self, batch: usize, device: &Device) -> GatedDeltaNetCache {
-        GatedDeltaNetCache {
+    fn zero_cache(&self, batch: usize, device: &Device) -> GatedDeltaNet1Cache {
+        GatedDeltaNet1Cache {
             conv_bwc: self.qkv.zero_conv_window(batch, device),
             state_bhkv: Tensor::zeros(
                 Shape::new([batch, self.nheads(), self.head_k_dim(), self.head_v_dim()]),
@@ -147,16 +147,16 @@ impl GatedDeltaNet {
     pub fn forward(
         &self,
         input_bsd: Tensor<3>,
-        cache: Option<GatedDeltaNetCache>,
+        cache: Option<GatedDeltaNet1Cache>,
         path: DeltaPath,
-    ) -> (Tensor<3>, GatedDeltaNetCache) {
+    ) -> (Tensor<3>, GatedDeltaNet1Cache) {
         let [batch, sequence, d_model] = input_bsd.dims();
         assert_eq!(d_model, self.d_model());
         san(&input_bsd);
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bsd.device()));
         cache.sanity();
-        let GatedDeltaNetCache {
+        let GatedDeltaNet1Cache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -191,7 +191,7 @@ impl GatedDeltaNet {
 
         (
             out_bsd,
-            GatedDeltaNetCache {
+            GatedDeltaNet1Cache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },
@@ -206,13 +206,13 @@ impl GatedDeltaNet {
     pub fn step(
         &self,
         input_bd: Tensor<2>,
-        cache: Option<GatedDeltaNetCache>,
-    ) -> (Tensor<2>, GatedDeltaNetCache) {
+        cache: Option<GatedDeltaNet1Cache>,
+    ) -> (Tensor<2>, GatedDeltaNet1Cache) {
         let [batch, d_model] = input_bd.dims();
         assert_eq!(d_model, self.d_model());
 
         let cache = cache.unwrap_or_else(|| self.zero_cache(batch, &input_bd.device()));
-        let GatedDeltaNetCache {
+        let GatedDeltaNet1Cache {
             conv_bwc,
             state_bhkv,
         } = cache;
@@ -242,7 +242,7 @@ impl GatedDeltaNet {
 
         (
             out_bd,
-            GatedDeltaNetCache {
+            GatedDeltaNet1Cache {
                 conv_bwc: next_conv_bwc,
                 state_bhkv: next_state_bhkv,
             },
@@ -251,17 +251,17 @@ impl GatedDeltaNet {
 }
 
 // ---------------------------------------------------------------------------
-// GatedDeltaNetConfig
+// GatedDeltaNet1Config
 // ---------------------------------------------------------------------------
 
-/// Hyperparameters for [`GatedDeltaNet`].
+/// Hyperparameters for [`GatedDeltaNet1`].
 ///
 /// Parameterised the way the paper and the reference are: an explicit
 /// `head_k_dim` and head count, with the value width as an expansion of it.
 /// At the reference's defaults the block lands at roughly `6·d_model²`
 /// parameters, the same budget as a Transformer layer.
 #[derive(Config, Debug)]
-pub struct GatedDeltaNetConfig {
+pub struct GatedDeltaNet1Config {
     /// Model width.
     pub d_model: usize,
 
@@ -332,7 +332,7 @@ pub struct GatedDeltaNetConfig {
     pub has_proj_bias: bool,
 }
 
-impl GatedDeltaNetConfig {
+impl GatedDeltaNet1Config {
     /// The value head count actually used (`nheads` when unset).
     pub fn n_value_heads_resolved(&self) -> usize {
         if self.n_value_heads == 0 {
@@ -366,7 +366,7 @@ impl GatedDeltaNetConfig {
     }
 
     /// Allocate and initialise the block on `device`.
-    pub fn init(&self, device: &Device) -> GatedDeltaNet {
+    pub fn init(&self, device: &Device) -> GatedDeltaNet1 {
         let nheads_v = self.n_value_heads_resolved();
         let value_dim = self.value_dim();
 
@@ -408,7 +408,7 @@ impl GatedDeltaNetConfig {
             })
             .init(device);
 
-        GatedDeltaNet {
+        GatedDeltaNet1 {
             qkv,
             gate,
             norm: OutNorm::init(self.head_v_dim(), self.use_gate, device),

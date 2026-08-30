@@ -48,7 +48,7 @@ pub enum WriteGate {
     /// One `β` per head, doing both jobs at once.
     #[default]
     Scalar,
-    /// [GDN-2](crate::gdn2): an erase gate per **key** channel and a write gate
+    /// [GDN-2](crate::gated_deltanet_2): an erase gate per **key** channel and a write gate
     /// per **value** channel, projected independently.
     Channel,
 }
@@ -306,7 +306,7 @@ impl QkvProjection {
     /// (not merely cheap — the same tensor) without grouped values.
     ///
     /// Public because a family may have its own query/key-side tensor to
-    /// replicate: [GDN-2](crate::gdn2)'s per-key-channel forget gate is
+    /// replicate: [GDN-2](crate::gated_deltanet_2)'s per-key-channel forget gate is
     /// produced after the projection and has to follow `q`/`k` across a group.
     pub fn expand_to_value_heads<const D: usize, const DP1: usize>(&self, t: Tensor<D>) -> Tensor<D> {
         if self.heads_per_group() == 1 {

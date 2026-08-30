@@ -3,7 +3,7 @@
 //! With a per-head gate the chunk's decay factors out of the key contraction,
 //! so `exp(Gᵢ − Gⱼ)` is a plain `[chunk_len, chunk_len]` mask and
 //! [`chunk`](super::chunk) builds both score matrices with one matmul each. A
-//! per-channel gate ([GDN-2](crate::gdn2)) does not factor:
+//! per-channel gate ([GDN-2](crate::gated_deltanet_2)) does not factor:
 //!
 //! ```text
 //!   M[i, j] = Σ_d rowsᵢ,d · kⱼ,d · e^{Gᵢ,d − Gⱼ,d}

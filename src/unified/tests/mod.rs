@@ -19,8 +19,8 @@ pub(crate) type Device = burn::prelude::Device;
 
 /// A deliberately tiny Gated DeltaNet: the tests are about the containers, not
 /// about capacity.
-pub(crate) fn tiny_block(d_model: usize) -> crate::gated_deltanet::prelude::GatedDeltaNetConfig {
-    crate::gated_deltanet::prelude::GatedDeltaNetConfig::new(d_model)
+pub(crate) fn tiny_block(d_model: usize) -> crate::gated_deltanet_1::prelude::GatedDeltaNet1Config {
+    crate::gated_deltanet_1::prelude::GatedDeltaNet1Config::new(d_model)
         .with_nheads(2)
         .with_head_k_dim(4)
         .with_expand_v(1.0)
