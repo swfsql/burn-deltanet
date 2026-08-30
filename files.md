@@ -109,9 +109,12 @@ Module header only: the recurrence, the WY derivation, why chunks are serial,
 and the notation table. No code.
 
 ### `path.rs`
-- `DeltaPath { Recurrent, Chunk { chunk_len: Option<usize>, solve: TriSolve } }`
-  — `Default` is `Chunk { None, Blocked }`; `DEFAULT_CHUNK_LEN = 64`;
-  `chunk()`, `chunk_len(n)`, `resolved_chunk_len()`.
+- `DeltaPath { Recurrent, Chunk { chunk_len: Option<usize>, solve: TriSolve },
+  ChunkRecalculated { chunk_len: Option<usize> } }` — `Default` is
+  `ChunkRecalculated { None }`; `DEFAULT_CHUNK_LEN = 64`; `chunk()`,
+  `chunk_len(n)`, `chunk_len_on_tape(n)`, `resolved_chunk_len()`.
+  `Chunk`/`ChunkRecalculated` share one forward and differ only in how it is
+  differentiated — `burn-mamba`'s `Serial`/`SerialRecalculated` split.
 - `DeltaInput { q_bshk, k_bshk, v_bshv, erase_bshK, write_bshV, g_bshK:
   Option<_>, state_bhkv, scale: Option<f64> }` + `dims()`, `resolved_scale()`
   (`1/√head_k_dim`), `has_channel_decay()`, `sanity()`,
@@ -133,7 +136,14 @@ inside, so the same bundle reads identically on either path.
 - `DeltaInput::delta_recurrent()` — unrolls it.
 
 ### `chunk.rs`
-- `DeltaInput::delta_chunk(chunk_len, solve)` — the chunkwise WY algorithm.
+- `DeltaInput::delta_chunk(chunk_len, solve)` — the chunkwise WY algorithm,
+  differentiated by autodiff.
+- `DeltaInput::delta_chunk_recalculated(chunk_len)` — the same, with the custom
+  backward.
+
+Both are one-line wrappers over the private `delta_chunk_with(chunk_len,
+ChunkSolve)`; `ChunkSolve { Tape(TriSolve), Custom }` is the *whole* difference
+between the two paths today, and is where further hand-written backwards attach.
 
 Layout is `[batch, nchunks, nheads, chunk_len, ·]`: heads ahead of the chunk axis
 so every matmul batches over `(b, n, h)` and acts on the `[chunk_len, ·]` planes.
@@ -154,15 +164,39 @@ neither factor spans more than half a block. Out-of-range columns get `−∞`
 (exactly `0`, never `inf`) and are masked away downstream anyway.
 
 ### `tri.rs`
-- `TriSolve { Blocked, Neumann }`, `unit_lower_inverse<D>(n_strict, solve)`.
+- `TriSolve { Blocked (default), Neumann }`,
+  `unit_lower_inverse<D>(n_strict, solve)`. Both are **forward** algorithms,
+  differentiated by autodiff; which backward runs is chosen on `DeltaPath`.
 
 `N` is nilpotent, so the series is exact — and unusable: with a chunk's keys
 correlated its partial sums peak near `C(L−2, L/2)` before cancelling down to a
-`T` of order 1, so `Neumann` is a reference only. `Blocked` (default) inverts by
-blocked forward substitution instead — `P ← P + P X P` over doubling block
-sizes, `⌈log₂ L⌉` steps of two matmuls, every intermediate an exact inverse of a
+`T` of order 1, so `Neumann` is a reference only. `Blocked` inverts by blocked
+forward substitution instead — `P ← P + P X P` over doubling block sizes,
+`⌈log₂ L⌉` steps of two matmuls, every intermediate an exact inverse of a
 principal submatrix. The caller owes the strict-lower property; nothing here
 re-masks it.
+
+### `tri/custom.rs`
+- `unit_lower_inverse<D>(n_strict)` — `tri.rs`'s at `TriSolve::Blocked`, same
+  values, routed through the extension so autodiff backends substitute the
+  analytic backward. Rank-erases to `[flat, size, size]` (`reshape` is a
+  transparent autodiff pass-through) because the node works on runtime shapes.
+  Called by `DeltaInput::delta_chunk_recalculated`, and by nothing else.
+- `DeltaTriBackendExt: Backend` (`#[backend_extension(...)]`) with
+  `unit_lower_inverse`; the default body is the ordinary ladder on `B`'s
+  primitives via `burn_stack::utils::fprim::F`. `DeltaTriAutodiffBackendExt`
+  from `decl_autodiff_backend_ext!`.
+- `blocked_inverse::<B>` / `block_strict_lower::<B>` / `strict_tril::<B>` —
+  primitive ports of `tri.rs`'s helpers. `F` carries `triu` but no `tril`/`eye`,
+  hence `eye = triu(0) − triu(1)` and `tril(-1) = ones − triu(0)`.
+- `mod backward` (`cfg(autodiff)`) — one `Backward<B, 1>` node computing
+  `Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)` from `dT = T dN T`. Its `State` is the node's own
+  **output** `T`, already alive as the input of the chunk's `U`/`W` matmuls, so
+  the node retains nothing extra while the whole level ladder — ~4 live
+  `[b, nchunks, h, L, L]` tensors per level — leaves the tape entirely. This is
+  the reference kernel's backward verbatim: `prepare_wy_repr_bwd_kernel` in
+  `fla/ops/delta_rule/wy_fast.py` is `dA ← −tril(A · tril(dA) · A, −1)`, the
+  opposite sign convention for `N`.
 
 ### `tests/reference.rs`
 Values captured from `flash-linear-attention`'s `delta_rule_recurrence` and
@@ -284,7 +318,7 @@ separately).
 ## `benches/layer.rs`
 
 Single-block criterion benches in the three modes (`forward` / `train` /
-`step`), across the families, both `TriSolve` variants, `Recurrent` against
+`step`), across the families, the `TriSolve` variants, `Recurrent` against
 `Chunk`, and DeltaProduct's `n_householder`. Sizes and criterion's sampling
 come from the environment. Each case builds its block *inside* the closure
 criterion only calls for cases passing its filter, and drains the device once

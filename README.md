@@ -177,7 +177,8 @@ on a whole network.
 | Variant | Algorithm | Use |
 |---------|-----------|-----|
 | `Recurrent` | token-by-token; `O(sequence)` serial steps | decoding, short prefills, the correctness reference |
-| `Chunk { chunk_len, solve }` | chunkwise WY, batched GEMMs | training, prefill (the default) |
+| `Chunk { chunk_len, solve }` | chunkwise WY, batched GEMMs; backward via autodiff | the plain, minimal form |
+| `ChunkRecalculated { chunk_len }` | the same forward with a custom, memory-efficient backward | training, prefill (the default) |
 
 The chunk length trades intra-chunk GEMM work against the number of serial
 inter-chunk steps; every reference kernel settles on 64, which is the default.
@@ -188,6 +189,18 @@ reference). Only `Blocked` is usable past a chunk length of ~16: `N` is
 nilpotent, so the series is exact in exact arithmetic, but when the keys inside
 a chunk correlate its partial sums pass through `10¹⁷` on the way to a `T` of
 order 1, which no float32 survives.
+
+`Chunk` and `ChunkRecalculated` compute the same values; they differ only in how
+the gradient is taken — the same split `burn-mamba` draws between `Serial` and
+`SerialRecalculated`. Differentiating the ladder by autodiff keeps ~4 live
+`[batch, nchunks, nheads, L, L]` tensors *per level*, which is the bulk of
+training memory. `T = (I − N)⁻¹` instead has an exact closed-form backward —
+`Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)`, the reference kernel's own — needing only `T`, so
+`ChunkRecalculated` runs the ladder inside a custom autodiff node and never
+records it. Measured on the `mnist-class` example: 1815 → 985 MiB peak, and
+slightly faster (two matmuls against `3⌈log₂ L⌉`). That node is so far the
+*only* hand-written backward on the path; the rest of the chunk body still
+rides the tape.
 
 Unlike Mamba-2's chunk scan, the inter-chunk recurrence here is matrix-valued
 with a rank-`chunk_len` update, so there is no scalar-decay shortcut to

@@ -12,6 +12,25 @@ use burn_stack::utils::test_helpers::max_abs_diff;
 
 type Device = burn::prelude::Device;
 
+/// Every chunked path at `chunk_len`: both triangular solves on the tape, plus
+/// the custom-backward one. They compute the same function, so each is checked
+/// against the recurrent baseline on values *and* gradients.
+fn chunk_paths(chunk_len: usize) -> [DeltaPath; 3] {
+    [
+        DeltaPath::Chunk {
+            chunk_len: Some(chunk_len),
+            solve: TriSolve::Blocked,
+        },
+        DeltaPath::Chunk {
+            chunk_len: Some(chunk_len),
+            solve: TriSolve::Neumann,
+        },
+        DeltaPath::ChunkRecalculated {
+            chunk_len: Some(chunk_len),
+        },
+    ]
+}
+
 struct Raw {
     q: Tensor<4>,
     k: Tensor<4>,
@@ -272,17 +291,9 @@ fn check_chunk_matches_recurrent(
     );
 
     let baseline = run_path(DeltaPath::Recurrent, &raw, &y_head, &s_head);
-    for solve in [TriSolve::Blocked, TriSolve::Neumann] {
-        let run = run_path(
-            DeltaPath::Chunk {
-                chunk_len: Some(chunk_len),
-                solve,
-            },
-            &raw,
-            &y_head,
-            &s_head,
-        );
-        assert_runs_match(&baseline, &run, &format!("Chunk({chunk_len}, {solve:?})"), tol);
+    for path in chunk_paths(chunk_len) {
+        let run = run_path(path, &raw, &y_head, &s_head);
+        assert_runs_match(&baseline, &run, &format!("{path:?}"), tol);
     }
 }
 
@@ -636,20 +647,12 @@ fn check_channel_chunk_matches_recurrent(
     );
 
     let baseline = run_path(DeltaPath::Recurrent, &raw, &y_head, &s_head);
-    for solve in [TriSolve::Blocked, TriSolve::Neumann] {
-        let run = run_path(
-            DeltaPath::Chunk {
-                chunk_len: Some(chunk_len),
-                solve,
-            },
-            &raw,
-            &y_head,
-            &s_head,
-        );
+    for path in chunk_paths(chunk_len) {
+        let run = run_path(path, &raw, &y_head, &s_head);
         assert_runs_match(
             &baseline,
             &run,
-            &format!("Chunk({chunk_len}, {solve:?}) with channel gates"),
+            &format!("{path:?} with channel gates"),
             tol,
         );
     }

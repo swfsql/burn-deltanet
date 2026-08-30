@@ -23,21 +23,40 @@ pub enum DeltaPath {
     /// algebra. The definition — used for decoding, short prefills, and as the
     /// correctness reference the chunked path is tested against.
     Recurrent,
-    /// Chunkwise WY, backward via autodiff.
+    /// Chunkwise WY, **backward via autodiff**: every intermediate the forward
+    /// builds — including the `⌈log₂ L⌉` levels of the WY inverse — stays on
+    /// the tape. The plain, minimal form; for training, prefer
+    /// [`Self::ChunkRecalculated`].
     Chunk {
         /// Tokens per chunk; `None` ⇒ [`DeltaPath::DEFAULT_CHUNK_LEN`].
         chunk_len: Option<usize>,
         /// How the WY transform's `(I − N)⁻¹` is evaluated.
         solve: TriSolve,
     },
+    /// The same chunkwise WY forward with a **custom, memory-efficient
+    /// backward**, and the default.
+    ///
+    /// Values are identical to [`Self::Chunk`] at
+    /// [`TriSolve::Blocked`]; what differs is what reaches the tape. Today that
+    /// is the WY inverse only — its ladder runs inside a custom autodiff node
+    /// whose backward is the analytic `tril(Tᵀ Ḡ Tᵀ, −1)` (see
+    /// [`tri::custom`](super::tri::custom)) — which is roughly half of training
+    /// memory at the shapes this crate trains at. The remaining `[·, L, L]`
+    /// tensors and the serial scan's per-chunk stream are still differentiated
+    /// by autodiff.
+    ///
+    /// This is `burn-mamba`'s `SerialRecalculated` seam: `Recurrent` is the
+    /// definition, `Chunk` the production forward differentiated plainly, and
+    /// this the same forward with the backward written out by hand.
+    ChunkRecalculated {
+        /// Tokens per chunk; `None` ⇒ [`DeltaPath::DEFAULT_CHUNK_LEN`].
+        chunk_len: Option<usize>,
+    },
 }
 
 impl Default for DeltaPath {
     fn default() -> Self {
-        Self::Chunk {
-            chunk_len: None,
-            solve: TriSolve::Blocked,
-        }
+        Self::ChunkRecalculated { chunk_len: None }
     }
 }
 
@@ -45,16 +64,25 @@ impl DeltaPath {
     /// The chunk length used when a [`DeltaPath::Chunk`] carries `None`.
     pub const DEFAULT_CHUNK_LEN: usize = 64;
 
-    /// Chunkwise with the default chunk length and triangular solve.
+    /// Chunkwise at the default chunk length and backward — i.e.
+    /// [`Self::default`].
     pub fn chunk() -> Self {
         Self::default()
     }
 
-    /// Chunkwise with an explicit chunk length.
+    /// Chunkwise with an explicit chunk length, at the default backward.
     pub fn chunk_len(chunk_len: usize) -> Self {
+        Self::ChunkRecalculated {
+            chunk_len: Some(chunk_len),
+        }
+    }
+
+    /// Chunkwise with an explicit chunk length, differentiated by autodiff
+    /// ([`Self::Chunk`] at the default [`TriSolve`]).
+    pub fn chunk_len_on_tape(chunk_len: usize) -> Self {
         Self::Chunk {
             chunk_len: Some(chunk_len),
-            solve: TriSolve::Blocked,
+            solve: TriSolve::default(),
         }
     }
 
@@ -63,7 +91,9 @@ impl DeltaPath {
     pub fn resolved_chunk_len(&self) -> usize {
         match self {
             Self::Recurrent => 1,
-            Self::Chunk { chunk_len, .. } => chunk_len.unwrap_or(Self::DEFAULT_CHUNK_LEN),
+            Self::Chunk { chunk_len, .. } | Self::ChunkRecalculated { chunk_len } => {
+                chunk_len.unwrap_or(Self::DEFAULT_CHUNK_LEN)
+            }
         }
     }
 }
@@ -184,12 +214,18 @@ impl DeltaInput {
     /// - `final_state_bhkv`: `[batch, nheads, head_k_dim, head_v_dim]`
     pub fn run(self, path: DeltaPath) -> (Tensor<4>, Tensor<4>) {
         self.sanity();
+        let resolve = |chunk_len: Option<usize>| {
+            let chunk_len = chunk_len.unwrap_or(DeltaPath::DEFAULT_CHUNK_LEN);
+            assert!(chunk_len > 0, "chunk_len must be at least 1");
+            chunk_len
+        };
         match path {
             DeltaPath::Recurrent => self.delta_recurrent(),
             DeltaPath::Chunk { chunk_len, solve } => {
-                let chunk_len = chunk_len.unwrap_or(DeltaPath::DEFAULT_CHUNK_LEN);
-                assert!(chunk_len > 0, "chunk_len must be at least 1");
-                self.delta_chunk(chunk_len, solve)
+                self.delta_chunk(resolve(chunk_len), solve)
+            }
+            DeltaPath::ChunkRecalculated { chunk_len } => {
+                self.delta_chunk_recalculated(resolve(chunk_len))
             }
         }
     }

@@ -28,15 +28,44 @@ use burn_stack::modules::sanity as san;
 
 use super::decay::BlockDecay;
 use super::path::DeltaInput;
-use super::tri::{TriSolve, unit_lower_inverse};
+use super::tri::{TriSolve, custom, unit_lower_inverse};
+
+/// How the chunk body evaluates **and differentiates** the WY inverse.
+///
+/// The two entry points below differ in exactly this and nothing else, so the
+/// algorithm itself is written once.
+#[derive(Debug, Clone, Copy)]
+enum ChunkSolve {
+    /// One of the [`TriSolve`] forms, differentiated by autodiff over its own
+    /// ops — what [`DeltaInput::delta_chunk`] runs.
+    Tape(TriSolve),
+    /// The blocked ladder inside its custom autodiff node — what
+    /// [`DeltaInput::delta_chunk_recalculated`] runs.
+    Custom,
+}
 
 impl DeltaInput {
-    /// Chunkwise WY evaluation of the delta rule.
+    /// Chunkwise WY evaluation of the delta rule; **backward via autodiff**.
     ///
-    /// Serial over chunks, batched-GEMM within each. See
-    /// [`DeltaInput::run`] for the returned shapes.
-    #[allow(non_snake_case)]
+    /// Serial over chunks, batched-GEMM within each. See [`DeltaInput::run`]
+    /// for the returned shapes. For the memory-efficient backward, see
+    /// [`Self::delta_chunk_recalculated`].
     pub fn delta_chunk(self, chunk_len: usize, solve: TriSolve) -> (Tensor<4>, Tensor<4>) {
+        self.delta_chunk_with(chunk_len, ChunkSolve::Tape(solve))
+    }
+
+    /// [`Self::delta_chunk`] with the custom, memory-efficient backward.
+    ///
+    /// Identical values; what changes is what reaches the autodiff tape. Today
+    /// that is the WY inverse's `⌈log₂ L⌉`-level ladder only (see
+    /// [`custom`]); the rest of the body is still
+    /// differentiated by autodiff.
+    pub fn delta_chunk_recalculated(self, chunk_len: usize) -> (Tensor<4>, Tensor<4>) {
+        self.delta_chunk_with(chunk_len, ChunkSolve::Custom)
+    }
+
+    #[allow(non_snake_case)]
+    fn delta_chunk_with(self, chunk_len: usize, solve: ChunkSolve) -> (Tensor<4>, Tensor<4>) {
         let (batch, sequence, nheads, head_k_dim, head_v_dim) = self.dims();
         let scale = self.resolved_scale();
         let channel_decay = self.has_channel_decay();
@@ -139,7 +168,11 @@ impl DeltaInput {
         //   T = (I − N)⁻¹
         //   U = T (write ⊙ V)                 the chunk-local target updates
         //   W = T ((erase ⊙ K) ⊙ e^G)         how the chunk reads the old state
-        let t_bnhll = unit_lower_inverse((-akk_bnhll).tril(-1), solve);
+        let n_bnhll = (-akk_bnhll).tril(-1);
+        let t_bnhll = match solve {
+            ChunkSolve::Tape(solve) => unit_lower_inverse(n_bnhll, solve),
+            ChunkSolve::Custom => custom::unit_lower_inverse(n_bnhll),
+        };
 
         let u_bnhlv = t_bnhll.clone().matmul(v_write_bnhlv);
         let w_bnhlk = {

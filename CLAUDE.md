@@ -93,9 +93,13 @@ src/
 │  ├─ mod.rs         module doc: the recurrence, the WY derivation, notation table
 │  ├─ path.rs        DeltaInput (what a block hands over) + DeltaPath (selector)
 │  ├─ recurrent.rs   delta_step: one tick; the definition, and the decode primitive
-│  ├─ chunk.rs       the chunkwise WY algorithm (gate as an Option)
+│  ├─ chunk.rs       the chunkwise WY algorithm (gate as an Option); one body,
+│  │                 two entry points — delta_chunk (tape) and
+│  │                 delta_chunk_recalculated (custom backward)
 │  ├─ decay.rs       BlockDecay: the intra-chunk scores under a per-channel gate
 │  ├─ tri.rs         (I − N)⁻¹ for the WY transform: Blocked | Neumann
+│  ├─ tri/custom.rs  the Blocked ladder inside a custom autodiff node, whose
+│  │                 backward is analytic — so the ladder never reaches the tape
 │  └─ tests/         path agreement + `reference.rs`, values captured from
 │                    flash-linear-attention at float64
 ├─ deltanet/         DeltaNet: no forget gate (α ≡ 1) — block + config
@@ -208,7 +212,7 @@ chunk's keys correlate (a constant input) `‖Nʲ‖` peaks near `C(L−2, L/2)`
 survives that in f32. `TriSolve::Neumann` accumulates the series term by term
 and is a reference only, usable to `L ≈ 16`.
 
-`TriSolve::Blocked` (default) never forms a power of `N`. It is the block 2×2
+`TriSolve::Blocked` never forms a power of `N`. It is the block 2×2
 inversion applied to every adjacent pair of diagonal blocks at once, doubling
 the block size each step — a blocked forward substitution, where the reference
 kernel does the same substitution one row at a time:
@@ -222,6 +226,33 @@ kernel does the same substitution one row at a time:
 the `C` blocks it absorbs (`D_m[i,j] = ⌊i/m⌋ > ⌊j/m⌋`, an expanded `tril(-1)` of
 the block grid). `⌈log₂ L⌉` steps of two matmuls, every intermediate an exact
 inverse of a principal submatrix of `I − N`, so nothing grows.
+
+### Which backward runs (the `SerialRecalculated` seam)
+
+`TriSolve` picks a **forward**; how it is differentiated is a separate choice,
+one level up on `DeltaPath`. This is `burn-mamba`'s `Mamba2SsdPath` split, and
+the delta-rule mapping is one-for-one:
+
+| `burn-mamba` | here | |
+|---|---|---|
+| `Minimal` | `Recurrent` | the definition / reference |
+| `Serial` | `Chunk { chunk_len, solve }` | the production forward, backward via autodiff |
+| `SerialRecalculated` | `ChunkRecalculated { chunk_len }` | the same forward, backward written by hand — the **default** |
+
+The pay-off is concentrated in the WY inverse. Autodiff over its ladder keeps
+~4 live `[b, nchunks, h, L, L]` tensors per level, which is most of training
+memory, and `T` has an exact closed-form backward — `Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)`,
+the reference kernel's own — needing only `T`, the node's own output. So
+`ChunkRecalculated` runs the identical ladder inside a custom autodiff node
+(`tri/custom.rs`, `burn-mamba`'s shape: a `#[backend_extension]` trait whose
+default body is the forward on `B`'s primitives, plus one
+`impl … for Autodiff<B>`) and never records it: same values, ~half the training
+memory, and cheaper (two matmuls against `3⌈log₂ L⌉`).
+
+**That node is currently the only hand-written backward on the path** — the
+rest of `delta_chunk` still rides the tape, so `ChunkRecalculated` is the seam
+the remaining work grows into, not a finished port of
+`fla/ops/delta_rule/chunk.py::ChunkDeltaRuleFunction`.
 
 Chunks are processed **serially**: the inter-chunk recurrence
 `S ← (αI − KᵀW)S + KᵀU` is matrix-valued with a rank-`chunk_len` update, so

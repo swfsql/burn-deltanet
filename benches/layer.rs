@@ -10,8 +10,10 @@
 //! | `step`    | one recurrent `step` from the previous step's cache (decode) |
 //!
 //! Cases cover the axes that have their own code path: the four families, the
-//! two `TriSolve` variants of the WY inverse, `Recurrent` against `Chunk`,
-//! DeltaProduct's `n_householder`, and — for GDN-2 — the per-channel decay,
+//! two `TriSolve` variants of the WY inverse, `Recurrent` against `Chunk`
+//! against `ChunkRecalculated` (the custom-backward form — only the `train`
+//! group can tell those last two apart), DeltaProduct's `n_householder`, and —
+//! for GDN-2 — the per-channel decay,
 //! whose intra-chunk score matrices go through the block-decomposed path in
 //! `delta::decay` instead of a plain `[chunk_len, chunk_len]` mask.
 //!
@@ -243,6 +245,12 @@ fn paths(shape: Shape) -> Vec<(&'static str, DeltaPath)> {
             DeltaPath::Chunk {
                 chunk_len: Some(shape.chunk_len),
                 solve: TriSolve::Blocked,
+            },
+        ),
+        (
+            "chunk-recalculated",
+            DeltaPath::ChunkRecalculated {
+                chunk_len: Some(shape.chunk_len),
             },
         ),
         (

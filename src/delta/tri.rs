@@ -16,9 +16,8 @@
 //! nothing survives that cancellation, and the block's state diverges to `NaN`
 //! within a couple of optimiser steps.
 //!
-//! [`TriSolve::Blocked`] (the default) never forms a power of `N`. It inverts
-//! `I − N` the way a blocked forward substitution does, doubling the block size
-//! each step:
+//! [`TriSolve::Blocked`] never forms a power of `N`. It inverts `I − N` the way
+//! a blocked forward substitution does, doubling the block size each step:
 //!
 //! ```text
 //!   ⎡A  0⎤⁻¹   ⎡  A⁻¹      0  ⎤
@@ -36,9 +35,17 @@
 //! tensor ops. [`TriSolve::Neumann`] accumulates the series term by term and
 //! exists as the literal, obviously-correct reference the blocked path is
 //! tested against at the small sizes where the series is still conditioned.
+//!
+//! Both variants here are **forward** algorithms, differentiated by autodiff
+//! over their own ops. How that gradient is taken is a separate choice, made
+//! one level up by [`DeltaPath`](super::path::DeltaPath): its
+//! `ChunkRecalculated` arm runs the same blocked ladder inside a custom
+//! autodiff node instead — see [`custom`].
 
 use burn::prelude::*;
 use burn_stack::modules::sanity as san;
+
+pub mod custom;
 
 /// How to invert `I − N` for a strictly-lower-triangular nilpotent `N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -72,14 +79,14 @@ pub fn unit_lower_inverse<const D: usize>(n_strict: Tensor<D>, solve: TriSolve) 
     san(&n_strict);
 
     let device = n_strict.device();
-    let identity: Tensor<D> = Tensor::eye(size, &device).unsqueeze();
+    let eye = || -> Tensor<D> { Tensor::eye(size, &device).unsqueeze() };
 
     let t = match solve {
         TriSolve::Blocked => {
             // `p` holds the exact inverse of every `[block, block]` diagonal
             // block of `I − N`; `lower` is that level's block-lower mask, so
             // `lower − coarser` selects exactly the `C` blocks being absorbed.
-            let mut p = identity;
+            let mut p = eye();
             let mut lower = block_strict_lower(size, 1, &device);
             let mut block = 1usize;
             while block < size {
@@ -92,8 +99,8 @@ pub fn unit_lower_inverse<const D: usize>(n_strict: Tensor<D>, solve: TriSolve) 
             p
         }
         TriSolve::Neumann => {
-            let mut p = identity.clone();
-            let mut term = identity;
+            let mut p = eye();
+            let mut term = eye();
             for _ in 1..size {
                 term = term.matmul(n_strict.clone());
                 p = p + term.clone();
