@@ -8,20 +8,25 @@ a cleaned 2.7M-story subset of [TinyStories](https://arxiv.org/abs/2305.07759)
 
 The model is deliberately tiny: two Gated DeltaNet blocks (`d_model = 32`,
 `nheads = 3`, `head_k_dim = 8`, `expand_v = 2`), each followed by the SwiGLU MLP
-the reference architecture puts there, cycled to an 8-deep virtual stack over
-Multi-Gate residuals, between a tied character embedding and its transpose.
-**33,748 parameters**, of which the embedding is 1,536.
+the reference architecture puts there, joined by Multi-Gate residuals, between a
+tied character embedding and its transpose. **33,744 parameters**, of which the
+embedding is 1,536.
 
 That is `burn-mamba`'s `tiny-stories` model (39,632 parameters) to within 15%,
-on purpose: same corpus, same tokenizer, same window, same optimizer schedule,
-so the block is the variable. Everything except the block and its `model.rs` —
-the corpus, the windowing, the epoch loops, the sampler — is one shared copy in
+on purpose: same corpus, same tokenizer, same window, so the block is the
+variable. Everything except the block and its `model.rs` — the corpus, the
+windowing, the epoch loops, the sampler — is one shared copy in
 `burn_stack::examples::tiny_stories`. The budget is not matched exactly because
 the block's own sizing is fixed by the reference rather than by the target: with
 the output gate on, `fla/layers/gated_deltanet.py` asks for
 `nheads · head_k_dim = 0.75 · d_model` and `expand_v = 2`, which puts a layer at
 `6·d_model²` — a Transformer layer's budget — and leaves `key_dim = 24`,
 `value_dim = 48` at this width.
+
+The remaining headroom under a 40K budget is left **unspent on purpose**. A
+wider MLP, `expand_v = 3`, a fourth head, an 8-wide conv and a third layer were
+each measured, and none of them paid. This model is limited by its optimizer,
+not by its capacity.
 
 ## The model
 
@@ -37,14 +42,23 @@ of `GatedMlpConfig::from_hidden_ratio(d_model, 4)` width, a final norm before
 the head, the reference's global init — so what differs here is only what the
 *task* changes:
 
-- **No `grad_horizon`.** An LM is scored at *every* position, so leaving most
-  applications of a shared weight undifferentiated biases every one of those
-  readouts — unlike `mnist-class`, which reads out once at the end.
-  `burn-mamba`'s `tiny-stories` README measures that on this same corpus.
+- **No virtual stack, and so no `grad_horizon`.** `mnist-class` cycles its 2
+  real layers over 16 virtual ones; here 2, 4 and 8 applied layers score alike
+  while the deeper ones cost proportionally more time per step, so the stack is
+  left at its 2 real layers and there is nothing to truncate. Virtual depth is
+  free in parameters and is `burn-mamba`'s largest structural win on this same
+  corpus — it simply is not one for the delta rule.
 - **Multi-Gate residuals** instead of the plain additive skip `mnist-class` (and
   the reference) uses. This is the one structural departure from the reference
-  architecture kept here: four pooled streams between layers cost three vectors
-  per real layer and measurably beat the single skip at this budget.
+  architecture kept here: two pooled streams between the layers cost three
+  vectors each and measurably beat the single skip.
+
+  `n_stream` has to be read against the layer count. MGR *accumulates* one new
+  stream per layer until it holds `n_stream` of them and only then starts
+  mixing, so any `n_stream` above the layer count never mixes at all — it
+  degenerates into a pooled concatenation of the layer outputs, and measures
+  well below the plain skip. `n_stream = 2` is what actually mixes on a 2-layer
+  stack, and it is the setting that wins.
 
 The MLP's `ratio = 4` is the reference figure, but its 256-alignment is not
 meaningful at `d_model = 32` (it would make the MLP eight times the width the
@@ -128,18 +142,23 @@ artifacts' `training_config.json`:
 | `--train-stories <n>` | 4096 | stories pulled from the train split |
 | `--valid-stories <n>` | 256 | stories pulled from the validation split |
 | `--epochs <n>` | 16 | passes over the corpus |
-| `--batch-size <n>` | 8 | windows per optimizer step |
+| `--batch-size <n>` | 16 | windows per optimizer step |
 | `--no-muon` | off | keep the hidden weight matrices on AdamW instead of [Muon](https://kellerjordan.github.io/posts/muon/) (see `mnist-class`'s README) |
 
 - See `burn-deltanet/Cargo.toml` for other features or backend information.
 - See `burn-deltanet/examples/README.md` for the CLI usage overview.
 
-The schedule (batch 8, 16 epochs, cosine `12e-3 → 12e-4` after a 5%-of-an-epoch
-warmup, Muon on the hidden matrices) is carried over from `burn-mamba`'s
-`tiny-stories`, where it was tuned against this same corpus, window and parameter
-budget. It has **not** been re-swept for the delta rule, so it is a starting
-point rather than a tuned optimum: at 39K parameters that model was
-optimization-limited rather than capacity-limited, and the same is likely here.
+The schedule (batch 16, 16 epochs, cosine `24e-3 → 24e-4` after a 5%-of-an-epoch
+warmup, Muon on the hidden matrices) was swept against this corpus, window and
+parameter budget. Batch 16 is the largest that is *free*: at this model size the
+GPU is launch-bound, so batches 8 and 16 run at the same steps per second and 16
+simply sees twice the corpus for the same wall clock — 32 halves the rate. The
+learning rate was tuned over the opening few hundred steps, where a cosine sized
+for the whole run has barely moved, so read it as a peak rate rather than as a
+tuned anneal.
+
+Muon is the single most load-bearing line in that config: `--no-muon` costs more
+than every other knob here put together.
 
 ## Sampling
 
@@ -164,5 +183,5 @@ from noise into words into sentences.
 - Loss is reported both in nats (Burn's cross-entropy) and as **bits per
   character**; the uniform baseline is `log2(48) = 5.58` bits.
 - The whole 256-character window is processed in parallel by the chunkwise WY
-  path (`chunk_len = 64`), and the 8-deep virtual stack keeps every layer's
-  activations, so vram scales with `batch_size · seq_len · n_virtual_layers`.
+  path (`chunk_len = 64`), and every layer's activations are kept, so vram
+  scales with `batch_size · seq_len · n_layers`.

@@ -1,41 +1,48 @@
 //! The model configuration for the `tiny-stories` example — a small
-//! character-level Gated DeltaNet language model (2 real layers, cycled to an
-//! 8-deep virtual stack); see [`model_config`].
+//! character-level Gated DeltaNet language model (2 layers); see
+//! [`model_config`].
 
 use crate::dataset::VOCAB_SIZE;
 use burn_deltanet::prelude::{
     DeltaBlockConfig, DeltaNetworkShape, DeltaVocabNetConfig, DeltaVocabShape, GatedDeltaNet1Config,
     GatedMlpConfig, InitPolicy, ResidualsConfig,
 };
-use burn_stack::utils::{GradHorizon, Schedule};
+use burn_stack::utils::GradHorizon;
 
-/// Depth of the (virtual) layer stack: the 2 real weight sets applied four
-/// times. Virtual depth is **free in parameters**, so it is the cheapest
-/// capacity this budget can buy.
-const N_VIRTUAL_LAYERS: usize = 8;
-
-/// Number of real weight sets the virtual stack cycles over.
-const N_REAL_LAYERS: usize = 2;
-
-/// Back-propagate only the top `Depth(K)` applications of each real layer,
-/// everything below running on the inner backend; `None` tracks the whole stack.
+/// Number of layers, each its own weight set.
 ///
-/// `None` here, unlike `mnist-class`: a language model is scored at *every*
-/// position, so leaving most applications of a *shared* weight undifferentiated
-/// biases every one of those readouts — unlike a task that reads out once, at
-/// the end of the sequence. (`burn-mamba`'s `tiny-stories` README measures that
-/// on the same corpus.)
+/// **No virtual stack.** Cycling these 2 weight sets over a deeper virtual one
+/// is free in parameters, so it looks like the cheapest capacity a 40K budget
+/// can buy — and for `burn-mamba`'s `tiny-stories` it is. Here it is not:
+/// 2, 4 and 8 applied layers score alike, while the deeper ones cost
+/// proportionally more time per step. The delta rule's own recurrence already
+/// carries state along the sequence; re-applying the same weights down the
+/// depth axis adds nothing it does not already have.
+const N_LAYERS: usize = 2;
+
+/// Back-propagate only the top `Depth(K)` layers, everything below running on
+/// the inner backend; `None` tracks the whole stack.
+///
+/// `None` here, unlike `mnist-class`: truncating is what makes that example's
+/// 16-deep virtual stack affordable, and there is nothing to truncate in a
+/// 2-layer one. It would also be the wrong trade for a language model, which is
+/// scored at *every* position rather than once at the end of the sequence, so
+/// an undifferentiated layer biases every one of those readouts.
 const GRAD_HORIZON: Option<GradHorizon> = None;
 
 /// The character-level LM: two Gated DeltaNet blocks between a **tied**
 /// 48-character embedding and its transpose, each followed by the SwiGLU MLP the
 /// reference architecture puts there.
 ///
-/// 33,748 parameters — `burn-mamba`'s `tiny-stories` model (39,632 at the same
+/// 33,744 parameters — `burn-mamba`'s `tiny-stories` model (39,632 at the same
 /// `d_model = 32`) to within 15%, so the two are a fair comparison on one
 /// corpus, one tokenizer and one optimizer schedule, with the block as the
 /// variable. The budget is not matched exactly because the block's sizing is
-/// fixed by the reference's parameter allocation (below), not by the target.
+/// fixed by the reference's parameter allocation (below), not by the target —
+/// and the 6K of headroom under 40K is deliberately left unspent: a wider MLP,
+/// a wider `expand_v`, a fourth head, a longer conv and a third layer were each
+/// measured and none of them paid. This model is limited by its optimizer, not
+/// by its capacity.
 ///
 /// Why Gated DeltaNet 1 rather than the other three families: it is the one the
 /// deployed language models use (Qwen3-Next), and it is the smallest family that
@@ -48,13 +55,11 @@ const GRAD_HORIZON: Option<GradHorizon> = None;
 /// **What follows the reference and what does not.** The layer is the
 /// reference's, down to the parameter allocation (`~6·d_model²`, below) and the
 /// global init, inside Llama's macro architecture the paper states it uses:
-/// Pre-LN mixer, Pre-LN SwiGLU MLP, a final norm before the head. The *stack*
-/// is not: cycling 2 weight sets over 8 virtual layers, and mixing the layers
-/// through [`ResidualsConfig::MultiGate`] instead of one additive skip, are
-/// depth and capacity bought at (almost) no parameter cost, which the
-/// reference, training 21 distinct layers, never needs. Both are measured wins
-/// on this corpus at this budget — `burn-mamba`'s README has the numbers — and
-/// both are stated explicitly below rather than left to a default.
+/// Pre-LN mixer, Pre-LN SwiGLU MLP, a final norm before the head. The one
+/// departure is the *stack*'s residual: [`ResidualsConfig::MultiGate`] pools 2
+/// streams between the layers instead of the reference's single additive skip,
+/// for three vectors per layer. It is a measured win at this budget, and its
+/// `n_stream` is tied to the layer count — see below.
 pub fn model_config() -> DeltaVocabNetConfig {
     // d_model = 32 (intra/inter-layer expressivity, high impact on disk size)
     let d_model = 32;
@@ -91,8 +96,8 @@ pub fn model_config() -> DeltaVocabNetConfig {
             VOCAB_SIZE,
             // Every knob of `burn_stack::modules::NetworkShape` is stated here,
             // defaults included, so this one block describes the whole stack.
-            DeltaNetworkShape::new(N_REAL_LAYERS)
-                .with_n_virtual_layers(Some((N_VIRTUAL_LAYERS, Schedule::Cyclic)))
+            DeltaNetworkShape::new(N_LAYERS)
+                .with_n_virtual_layers(None)
                 .with_grad_horizon(GRAD_HORIZON)
                 // No stack-level class latents: every position is a character.
                 .with_class_latents(Vec::new())
@@ -100,14 +105,25 @@ pub fn model_config() -> DeltaVocabNetConfig {
                 .with_ignore_last_residual(false)
                 // Multi-Gate Residuals: `n_stream` pooled streams between layers
                 // instead of the reference's one additive skip, at the cost of
-                // three vectors per real layer. `per_virtual_layer: false` keeps
-                // one set per *real* layer, reused across the virtual passes.
+                // three vectors per layer.
+                //
+                // `n_stream` must be read against the layer count: MGR
+                // *accumulates* a new stream per layer until it has `n_stream`
+                // of them, and only then starts mixing. At `n_stream > N_LAYERS`
+                // the mixing phase is never reached at all and MGR degenerates
+                // into a pooled concatenation of the layer outputs, which
+                // measures well below the plain additive skip. `N_LAYERS` is the
+                // value that actually mixes here, and it is the one that wins.
                 .with_residuals(ResidualsConfig::MultiGate {
-                    n_stream: 4,
+                    n_stream: N_LAYERS,
                     // Start every stream on an equal, unbiased gate and let
-                    // training break the symmetry.
+                    // training break the symmetry. The paper's Highway-style
+                    // carry bias (`MultiGateResidualConfig::depth_init_bias`)
+                    // buys stability over a long run and measures as a tie at
+                    // this budget, so the simpler init is kept.
                     init_bias: 0.0,
                     init_bias_step: 0.0,
+                    // Moot without a virtual stack; one set per layer either way.
                     per_virtual_layer: false,
                 })
                 // The channel mixer of the Llama macro architecture, which every

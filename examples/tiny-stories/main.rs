@@ -2,8 +2,8 @@
 //!
 //! An auto-regressive Gated DeltaNet LM over single **characters** of the
 //! [TinyStories-GPT4-clean] corpus: two Gated DeltaNet blocks (each with the
-//! reference SwiGLU MLP, cycled to an 8-deep virtual stack over Multi-Gate
-//! residuals) between a **tied** 48-character embedding and its transpose.
+//! reference SwiGLU MLP, joined by Multi-Gate residuals) between a **tied**
+//! 48-character embedding and its transpose.
 //!
 //! [TinyStories-GPT4-clean]: https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean
 //!
@@ -58,11 +58,12 @@ pub fn launch(app_args: &AppArgs) {
 
     // setup training and model configs
     //
-    // The schedule below (batch size, epochs, the cosine LR bounds) is
-    // `burn-mamba`'s `tiny-stories` schedule, where it was tuned against the
-    // same corpus, window and parameter budget; it has not been re-swept for the
-    // delta rule.
-    let batch_size = 8;
+    // Batch 16 is the largest that is *free*: at this model size the GPU is
+    // launch-bound, so batches 8 and 16 run at the same steps/second and 16
+    // simply sees twice the corpus for the same wall clock. It does not extend —
+    // 32 halves the rate — so this is the edge of the free regime rather than a
+    // preference.
+    let batch_size = 16;
     let num_epochs = 16;
     let loaded = app_args.load_training_config::<TinyStoriesConfig>();
     let is_fresh = loaded.is_none();
@@ -89,8 +90,12 @@ pub fn launch(app_args: &AppArgs) {
         let iterations_per_epoch = windows / config.training.batch_size;
         config.training.lr = Lr::CosineAnnealing(
             CosineAnnealingLr::new(config.training.num_epochs * iterations_per_epoch)
-                .with_max_lr(12e-3)
-                .with_min_lr(12e-4)
+                // A broad optimum — halving or doubling it both measure worse,
+                // and anything much lower is far worse. It was tuned over the
+                // opening few hundred steps, where the cosine has barely moved,
+                // so read it as the peak rate rather than as a tuned anneal.
+                .with_max_lr(24e-3)
+                .with_min_lr(24e-4)
                 .with_warmup_steps(iterations_per_epoch / 20), // 5% of an epoch
         );
     }
