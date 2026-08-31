@@ -47,6 +47,10 @@ ARTIFACTS="/tmp/burn-deltanet-register-majority-abcd-0"
 # running only the inference from the trained model:
 cargo run --example register-majority --features "backend-flex" -- --inference --artifacts-path "$ARTIFACTS"
 
+# a short run: stop after 600 mini-batches, however many epochs that spans
+# (checkpoints and the end-of-epoch validation still happen before it stops)
+cargo run --example register-majority --features "backend-flex" -- --training --max-batches 600
+
 # assume /some/path/ contains a different training config file, e.g. with a different seed:
 TCONFIG="/some/path/training_config.json"
 
@@ -59,4 +63,4 @@ Downstream flags go after a trailing `--`; `register-carousel` takes `--turn rot
 
 ##### CLI Help Message
 
-Run any example with `-h` for the full flag list: it covers `--training` / `--inference`, the artifacts directory, the training/model config overrides, and `--remove-artifacts`.
+Run any example with `-h` for the full flag list: it covers `--training` / `--inference`, the artifacts directory, the training/model config overrides, `--remove-artifacts`, and `--max-batches` (a run-length cap in mini-batches, counted across epochs).
