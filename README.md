@@ -191,16 +191,14 @@ a chunk correlate its partial sums pass through `10¹⁷` on the way to a `T` of
 order 1, which no float32 survives.
 
 `Chunk` and `ChunkRecalculated` compute the same values; they differ only in how
-the gradient is taken — the same split `burn-mamba` draws between `Serial` and
-`SerialRecalculated`. Differentiating the ladder by autodiff keeps ~4 live
-`[batch, nchunks, nheads, L, L]` tensors *per level*, which is the bulk of
-training memory. `T = (I − N)⁻¹` instead has an exact closed-form backward —
-`Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)`, the reference kernel's own — needing only `T`, so
-`ChunkRecalculated` runs the ladder inside a custom autodiff node and never
-records it. Measured on the `mnist-class` example: 1815 → 985 MiB peak, and
-slightly faster (two matmuls against `3⌈log₂ L⌉`). That node is so far the
-*only* hand-written backward on the path; the rest of the chunk body still
-rides the tape.
+the gradient is taken. Under plain autodiff every intermediate the chunk body
+builds stays on the tape, and at these shapes the
+`[batch, nchunks, nheads, L, L]` tensors — ~4 *per level* of the `⌈log₂ L⌉`-step
+ladder that inverts `I − N` — are the bulk of training memory.
+`ChunkRecalculated` puts the whole body inside one custom autodiff node that
+retains only its seven leaf inputs, and replays the forward in its backward
+before differentiating it by hand — roughly ⅓ the training memory, for a few
+percent of throughput.
 
 Unlike Mamba-2's chunk scan, the inter-chunk recurrence here is matrix-valued
 with a rank-`chunk_len` update, so there is no scalar-decay shortcut to

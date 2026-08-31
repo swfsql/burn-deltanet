@@ -46,13 +46,13 @@ pub const DECAY_BLOCK_LEN: usize = 16;
 /// here so that a gate that *does* — a hand-built input, a different
 /// parameterisation — degrades into a wrong-but-finite number rather than into
 /// `inf`, which the masking downstream would turn into `NaN`.
-const MAX_EXPONENT: f64 = 48.0;
+pub(crate) const MAX_EXPONENT: f64 = 48.0;
 
 /// The largest block length that divides `chunk_len` and does not exceed
 /// [`DECAY_BLOCK_LEN`]. Every chunk length in practice is a power of two, so
 /// this is [`DECAY_BLOCK_LEN`]; the fallback keeps odd lengths exact (at worst
 /// one row per block, where the row factor is `1` and nothing can overflow).
-fn block_len(chunk_len: usize) -> usize {
+pub(crate) fn block_len(chunk_len: usize) -> usize {
     (1..=DECAY_BLOCK_LEN.min(chunk_len))
         .rev()
         .find(|m| chunk_len % m == 0)

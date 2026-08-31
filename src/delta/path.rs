@@ -36,18 +36,18 @@ pub enum DeltaPath {
     /// The same chunkwise WY forward with a **custom, memory-efficient
     /// backward**, and the default.
     ///
-    /// Values are identical to [`Self::Chunk`] at
-    /// [`TriSolve::Blocked`]; what differs is what reaches the tape. Today that
-    /// is the WY inverse only — its ladder runs inside a custom autodiff node
-    /// whose backward is the analytic `tril(Tᵀ Ḡ Tᵀ, −1)` (see
-    /// [`tri::custom`](super::tri::custom)) — which is roughly half of training
-    /// memory at the shapes this crate trains at. The remaining `[·, L, L]`
-    /// tensors and the serial scan's per-chunk stream are still differentiated
-    /// by autodiff.
+    /// Values are identical to [`Self::Chunk`] at [`TriSolve::Blocked`]; what
+    /// differs is what reaches the tape. The whole body runs inside one custom
+    /// autodiff node that retains only its seven leaf inputs, and its backward
+    /// replays the forward before differentiating it in closed form — so the
+    /// score matrices, the `⌈log₂ L⌉`-level ladder that inverts `I − N`, `T`,
+    /// `U`, `W`, `attn` and the per-chunk state stream never have to stay
+    /// alive. See [`chunk_recalculated`](super::chunk_recalculated).
     ///
-    /// This is `burn-mamba`'s `SerialRecalculated` seam: `Recurrent` is the
-    /// definition, `Chunk` the production forward differentiated plainly, and
-    /// this the same forward with the backward written out by hand.
+    /// The three arms are the same recurrence at three points on the
+    /// memory/complexity curve: [`Self::Recurrent`] is the definition,
+    /// [`Self::Chunk`] the production forward differentiated plainly, and this
+    /// the same forward with the backward written out by hand.
     ChunkRecalculated {
         /// Tokens per chunk; `None` ⇒ [`DeltaPath::DEFAULT_CHUNK_LEN`].
         chunk_len: Option<usize>,

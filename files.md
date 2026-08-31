@@ -113,8 +113,8 @@ and the notation table. No code.
   ChunkRecalculated { chunk_len: Option<usize> } }` — `Default` is
   `ChunkRecalculated { None }`; `DEFAULT_CHUNK_LEN = 64`; `chunk()`,
   `chunk_len(n)`, `chunk_len_on_tape(n)`, `resolved_chunk_len()`.
-  `Chunk`/`ChunkRecalculated` share one forward and differ only in how it is
-  differentiated — `burn-mamba`'s `Serial`/`SerialRecalculated` split.
+  `Chunk`/`ChunkRecalculated` are the same forward and differ only in how it is
+  differentiated (autodiff vs. the hand-written node).
 - `DeltaInput { q_bshk, k_bshk, v_bshv, erase_bshK, write_bshV, g_bshK:
   Option<_>, state_bhkv, scale: Option<f64> }` + `dims()`, `resolved_scale()`
   (`1/√head_k_dim`), `has_channel_decay()`, `sanity()`,
@@ -137,13 +137,8 @@ inside, so the same bundle reads identically on either path.
 
 ### `chunk.rs`
 - `DeltaInput::delta_chunk(chunk_len, solve)` — the chunkwise WY algorithm,
-  differentiated by autodiff.
-- `DeltaInput::delta_chunk_recalculated(chunk_len)` — the same, with the custom
-  backward.
-
-Both are one-line wrappers over the private `delta_chunk_with(chunk_len,
-ChunkSolve)`; `ChunkSolve { Tape(TriSolve), Custom }` is the *whole* difference
-between the two paths today, and is where further hand-written backwards attach.
+  differentiated by autodiff. The status quo; `chunk_recalculated/` is the same
+  forward with a hand-written backward.
 
 Layout is `[batch, nchunks, nheads, chunk_len, ·]`: heads ahead of the chunk axis
 so every matmul batches over `(b, n, h)` and acts on the `[chunk_len, ·]` planes.
@@ -176,33 +171,82 @@ forward substitution instead — `P ← P + P X P` over doubling block sizes,
 principal submatrix. The caller owes the strict-lower property; nothing here
 re-masks it.
 
-### `tri/custom.rs`
-- `unit_lower_inverse<D>(n_strict)` — `tri.rs`'s at `TriSolve::Blocked`, same
-  values, routed through the extension so autodiff backends substitute the
-  analytic backward. Rank-erases to `[flat, size, size]` (`reshape` is a
-  transparent autodiff pass-through) because the node works on runtime shapes.
-  Called by `DeltaInput::delta_chunk_recalculated`, and by nothing else.
-- `DeltaTriBackendExt: Backend` (`#[backend_extension(...)]`) with
-  `unit_lower_inverse`; the default body is the ordinary ladder on `B`'s
-  primitives via `burn_stack::utils::fprim::F`. `DeltaTriAutodiffBackendExt`
-  from `decl_autodiff_backend_ext!`.
-- `blocked_inverse::<B>` / `block_strict_lower::<B>` / `strict_tril::<B>` —
-  primitive ports of `tri.rs`'s helpers. `F` carries `triu` but no `tril`/`eye`,
-  hence `eye = triu(0) − triu(1)` and `tril(-1) = ones − triu(0)`.
-- `mod backward` (`cfg(autodiff)`) — one `Backward<B, 1>` node computing
-  `Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)` from `dT = T dN T`. Its `State` is the node's own
-  **output** `T`, already alive as the input of the chunk's `U`/`W` matmuls, so
-  the node retains nothing extra while the whole level ladder — ~4 live
-  `[b, nchunks, h, L, L]` tensors per level — leaves the tape entirely. This is
-  the reference kernel's backward verbatim: `prepare_wy_repr_bwd_kernel` in
-  `fla/ops/delta_rule/wy_fast.py` is `dA ← −tril(A · tril(dA) · A, −1)`, the
-  opposite sign convention for `N`.
+### `tri/prim.rs`
+- `unit_lower_inverse::<B>(n_strict_fss)` — `tri.rs`'s `Blocked` ladder on
+  backend primitives (`burn_stack::utils::fprim::F`), for
+  `[flat, size, size]`. Same values; it exists because a custom autodiff node
+  runs under a generic `B`, where the `Dispatch`-pinned `Tensor` is
+  unavailable. `Neumann` is not ported — it is a reference for the *forward*,
+  and this path is about the backward.
+- `block_strict_lower::<B>` — the primitive port of `tri.rs`'s helper. `F`
+  carries `triu` but no `eye`, hence `eye = triu(0) − triu(1)`.
 
 ### `tests/reference.rs`
 Values captured from `flash-linear-attention`'s `delta_rule_recurrence` and
 `naive_recurrent_gated_delta_rule` at float64, for a fixed input. Regenerate
 with `scripts/gen_fixture.py`. This is what makes the suite a *port* check
 rather than only a self-consistency check.
+
+---
+
+## `src/delta/chunk_recalculated/` — the same forward, backward by hand
+
+`ChunkRecalculated`: one custom autodiff node over the *whole* chunk body that
+retains only its seven leaf inputs, replays the forward in its backward, and
+takes the gradient analytically. This is the reference kernel's own split —
+`chunk_delta_rule_fwd`/`_bwd` in `fla/ops/delta_rule/chunk.py` save
+`(q, k, v, β, A, h₀)` and recompute `w`, `u` and the per-chunk state stream.
+
+### `chunk_recalculated.rs`
+- `DeltaInput::delta_chunk_recalculated(chunk_len)` — the entry point. An
+  absent gate is passed as an untracked `[1,1,1,1]` placeholder plus
+  `has_gate: false`, because the node's parent list is fixed at 7 while
+  `DeltaInput::g_bshK` is an `Option`.
+- `DeltaChunkBackendExt: Backend` (`#[backend_extension(...)]`) with
+  `delta_chunk_recalculated(q, k, v, erase, write, g, state, has_gate,
+  chunk_len, scale) -> (y_bshv, final_state_bhkv)`; the default body is the
+  plain forward on `B`'s primitives, which is what every non-autodiff backend
+  runs. `DeltaChunkAutodiffBackendExt` from `decl_autodiff_backend_ext!`.
+
+### `forward.rs`
+The forward in three replayable stages, so the backward can re-run them rather
+than store their results: `Chunked::prepare` (pad, chunk, scale `q`, cumulate
+the gate), `Chunked::wy` (the two score matrices, `T`, `U`/`W`/`attn`), and
+`Chunked::scan` (the serial inter-chunk recurrence). `ScanMode::States` returns
+the state entering each chunk and skips `y`, which is all the backward wants.
+Also `Dims`, the layout helpers (`pad_sequence`/`chunked`/`unchunked`/`pick`/
+`reduce_to_width`) and `BlockDecayPrim`, the primitive port of `decay.rs`.
+
+### `backward.rs` (`cfg(autodiff)`)
+`impl DeltaChunkBackendExt for Autodiff<B, C>`: one `Backward<B, 7>` node whose
+`State` is the seven leaf primitives, the shapes, and `(has_gate, chunk_len,
+scale)`. The two outputs are flattened into one tracked 1-D tensor
+(`burn_stack::utils::combined_grad`) so a single node covers both.
+
+### `combined_backward.rs`
+- `combined_backward::<B>(d_y, d_final_state, …leaves…, chunk_len, scale) ->
+  DeltaChunkGrads` — recompute, then the gradients.
+
+Three steps are worth naming. **The inverse**: `dT = T dN T`, so
+`Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)` — two matmuls reading only `T`, never the ladder
+(`prepare_wy_repr_bwd_kernel` in `fla/ops/delta_rule/wy_fast.py` is
+`dA ← −tril(A · tril(dA) · A, −1)`, the opposite sign convention for `N`).
+**The scan**: walked in reverse over the recomputed state stream, because
+running the recurrence backwards would divide by `e^G`. **The gate**: `G` is a
+cumulative sum, so every use of it accumulates into `Ḡ` first and the reverse
+cumsum happens once at the end.
+
+### `prim.rs`
+`FPrimExt` — `mul_scalar`, `clamp_max`, `tril`, `ge_elem` (the clamp's own
+gradient mask) on `F`. Generic `B::float_*` calls that `burn-stack`'s wrapper
+does not carry; local because that crate is pinned by revision.
+
+### `tests.rs`
+`ChunkRecalculated` against `Chunk { Blocked }` on values *and* gradients, at a
+tight tolerance because the two run identical arithmetic: the three gate widths,
+`β > 1`, a partial last chunk, `expand_v ≠ 1`, every chunk length from 1, and
+the untracked (inference) path. The broader "all paths are the same recurrence"
+contract is `delta/tests.rs`, against `Recurrent`.
 
 ---
 

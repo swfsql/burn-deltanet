@@ -123,6 +123,7 @@
 //! may appear in comments but never in code identifiers.
 
 pub mod chunk;
+pub mod chunk_recalculated;
 pub mod decay;
 pub mod path;
 pub mod recurrent;

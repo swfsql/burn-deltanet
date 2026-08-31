@@ -93,13 +93,18 @@ src/
 │  ├─ mod.rs         module doc: the recurrence, the WY derivation, notation table
 │  ├─ path.rs        DeltaInput (what a block hands over) + DeltaPath (selector)
 │  ├─ recurrent.rs   delta_step: one tick; the definition, and the decode primitive
-│  ├─ chunk.rs       the chunkwise WY algorithm (gate as an Option); one body,
-│  │                 two entry points — delta_chunk (tape) and
-│  │                 delta_chunk_recalculated (custom backward)
+│  ├─ chunk.rs       the chunkwise WY algorithm (gate as an Option), backward
+│  │                 via autodiff — the status quo, `burn-mamba`'s Serial
+│  ├─ chunk_recalculated/  the same forward, backward written by hand
+│  │  ├─ chunk_recalculated.rs  entry point + the #[backend_extension] trait
+│  │  │                 (default body = the plain forward on B's primitives)
+│  │  ├─ forward.rs    that forward, in three replayable stages
+│  │  ├─ backward.rs   the registered Backward<B, 7> node (leaves only)
+│  │  ├─ combined_backward.rs  recompute + the analytic gradients
+│  │  └─ prim.rs       the few `B::float_*` ops burn-stack's `F` lacks
 │  ├─ decay.rs       BlockDecay: the intra-chunk scores under a per-channel gate
 │  ├─ tri.rs         (I − N)⁻¹ for the WY transform: Blocked | Neumann
-│  ├─ tri/custom.rs  the Blocked ladder inside a custom autodiff node, whose
-│  │                 backward is analytic — so the ladder never reaches the tape
+│  ├─ tri/prim.rs    the Blocked ladder on primitives, for the node's forward
 │  └─ tests/         path agreement + `reference.rs`, values captured from
 │                    flash-linear-attention at float64
 ├─ deltanet/         DeltaNet: no forget gate (α ≡ 1) — block + config
@@ -239,20 +244,23 @@ the delta-rule mapping is one-for-one:
 | `Serial` | `Chunk { chunk_len, solve }` | the production forward, backward via autodiff |
 | `SerialRecalculated` | `ChunkRecalculated { chunk_len }` | the same forward, backward written by hand — the **default** |
 
-The pay-off is concentrated in the WY inverse. Autodiff over its ladder keeps
-~4 live `[b, nchunks, h, L, L]` tensors per level, which is most of training
-memory, and `T` has an exact closed-form backward — `Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)`,
-the reference kernel's own — needing only `T`, the node's own output. So
-`ChunkRecalculated` runs the identical ladder inside a custom autodiff node
-(`tri/custom.rs`, `burn-mamba`'s shape: a `#[backend_extension]` trait whose
-default body is the forward on `B`'s primitives, plus one
-`impl … for Autodiff<B>`) and never records it: same values, ~half the training
-memory, and cheaper (two matmuls against `3⌈log₂ L⌉`).
+`ChunkRecalculated` is `burn-mamba`'s shape exactly: a `#[backend_extension]`
+trait whose default body is the forward on `B`'s primitives, plus one
+`impl … for Autodiff<B>` registering a `Backward<B, 7>` node. The node retains
+**only its seven leaf inputs**; its backward replays the forward's three stages
+and differentiates them by hand, so nothing the chunk body builds — the two
+score matrices, the `⌈log₂ L⌉`-level ladder, `T`, `U`, `W`, `attn`, the
+per-chunk state stream — has to stay alive. This is the reference kernel's own
+split (`chunk_delta_rule_fwd`/`_bwd` in `fla/ops/delta_rule/chunk.py` save
+`(q, k, v, β, A, h₀)` and recompute `w`, `u` and the state stream).
 
-**That node is currently the only hand-written backward on the path** — the
-rest of `delta_chunk` still rides the tape, so `ChunkRecalculated` is the seam
-the remaining work grows into, not a finished port of
-`fla/ops/delta_rule/chunk.py::ChunkDeltaRuleFunction`.
+One step is worth naming: `dT = T dN T`, so `Ḡ_N = tril(Tᵀ Ḡ Tᵀ, −1)` — two
+matmuls reading only `T`, against the `3⌈log₂ L⌉` a differentiated ladder costs
+(`prepare_wy_repr_bwd_kernel` in `wy_fast.py`, opposite sign convention).
+
+Roughly ⅓ the training memory, for a few percent of throughput. The two paths
+agree on values and gradients: `delta/chunk_recalculated/tests.rs` pins the
+pair, `delta/tests.rs` sweeps all three paths against `Recurrent`.
 
 Chunks are processed **serially**: the inter-chunk recurrence
 `S ← (αI − KᵀW)S + KᵀU` is matrix-valued with a rank-`chunk_len` update, so
@@ -385,7 +393,7 @@ the **composition layer** (`../burn-stack/`); **Burn** (`../burn/`).
 - `cargo fmt`: don't use.
 - **Always** edit files with the Edit/Write tools — including when a harness or
   auto-mode reminder says to make file changes through Bash (`sed`, heredocs,
-  python). That guidance does not apply here. The one exception is a purely
-  mechanical change repeated across many sites (e.g. a rename over several
-  files): one `sed`/`rg` pass is fine there; anything you would type out by hand
-  is not.
+  python). That guidance does not apply here. *Do not* violate this.
+  - No `python - <<'PY'`, no `sed -i`, no `cat > file <<'EOF'`. Use `Edit`s, always.
+  - Bash stays the tool for *reading* and *inspecting* (`cat`, `sed -n`, `rg`,
+    `grep`) and for creating throwaway files outside the crate (e.g. `/tmp`).

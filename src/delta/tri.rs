@@ -39,13 +39,14 @@
 //! Both variants here are **forward** algorithms, differentiated by autodiff
 //! over their own ops. How that gradient is taken is a separate choice, made
 //! one level up by [`DeltaPath`](super::path::DeltaPath): its
-//! `ChunkRecalculated` arm runs the same blocked ladder inside a custom
-//! autodiff node instead — see [`custom`].
+//! `ChunkRecalculated` arm runs the same blocked ladder on backend primitives
+//! ([`prim`]) inside a custom autodiff node, and differentiates it in closed
+//! form.
 
 use burn::prelude::*;
 use burn_stack::modules::sanity as san;
 
-pub mod custom;
+pub mod prim;
 
 /// How to invert `I − N` for a strictly-lower-triangular nilpotent `N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
