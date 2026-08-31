@@ -100,8 +100,7 @@ src/
 │  │  │                 (default body = the plain forward on B's primitives)
 │  │  ├─ forward.rs    that forward, in three replayable stages
 │  │  ├─ backward.rs   the registered Backward<B, 7> node (leaves only)
-│  │  ├─ combined_backward.rs  recompute + the analytic gradients
-│  │  └─ prim.rs       the few `B::float_*` ops burn-stack's `F` lacks
+│  │  └─ combined_backward.rs  recompute + the analytic gradients
 │  ├─ decay.rs       BlockDecay: the intra-chunk scores under a per-channel gate
 │  ├─ tri.rs         (I − N)⁻¹ for the WY transform: Blocked | Neumann
 │  ├─ tri/prim.rs    the Blocked ladder on primitives, for the node's forward

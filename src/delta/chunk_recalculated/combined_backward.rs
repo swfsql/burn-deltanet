@@ -43,7 +43,6 @@ use super::forward::{
     BlockDecayPrim, Chunked, Dims, ScanMode, Wy, chunked, pad_sequence, pick, reduce_to_width,
     unchunked,
 };
-use super::prim::FPrimExt;
 use crate::delta::decay::{MAX_EXPONENT, block_len};
 
 /// The gradient of every input [`combined_backward`] is given.

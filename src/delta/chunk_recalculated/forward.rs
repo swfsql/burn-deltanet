@@ -21,7 +21,6 @@
 use burn::backend::Backend;
 use burn_stack::utils::fprim::{F, Mask, san};
 
-use super::prim::FPrimExt;
 use crate::delta::decay::{MAX_EXPONENT, block_len};
 use crate::delta::tri::prim::unit_lower_inverse;
 

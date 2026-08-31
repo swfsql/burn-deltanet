@@ -236,11 +236,6 @@ running the recurrence backwards would divide by `e^G`. **The gate**: `G` is a
 cumulative sum, so every use of it accumulates into `Ḡ` first and the reverse
 cumsum happens once at the end.
 
-### `prim.rs`
-`FPrimExt` — `mul_scalar`, `clamp_max`, `tril`, `ge_elem` (the clamp's own
-gradient mask) on `F`. Generic `B::float_*` calls that `burn-stack`'s wrapper
-does not carry; local because that crate is pinned by revision.
-
 ### `tests.rs`
 `ChunkRecalculated` against `Chunk { Blocked }` on values *and* gradients, at a
 tight tolerance because the two run identical arithmetic: the three gate widths,

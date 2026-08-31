@@ -30,6 +30,10 @@
 //! - [`backward`] — the registered autodiff node.
 //! - [`combined_backward`] — the recompute-based gradient math.
 //!
+//! All of it is written against `burn-stack`'s `F`, the rank-tagged primitive
+//! wrapper, because a custom node runs under a generic `B` where the
+//! `Dispatch`-pinned `Tensor` is unavailable.
+//!
 //! Nothing here reaches below Burn's portable tensor ops.
 
 #[cfg(feature = "autodiff")]
@@ -37,7 +41,6 @@ pub mod backward;
 mod chunk_recalculated;
 pub mod combined_backward;
 pub(crate) mod forward;
-pub(crate) mod prim;
 
 pub use chunk_recalculated::DeltaChunkBackendExt;
 

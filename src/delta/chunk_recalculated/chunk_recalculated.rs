@@ -94,6 +94,7 @@ impl DeltaInput {
     Flex:  cfg(feature = "backend-flex"),
     NdArray:  cfg(feature = "backend-ndarray"),
     LibTorch:  cfg(any(feature = "backend-tch-cpu", feature = "backend-tch-gpu")),
+    Remote:  cfg(feature = "backend-remote"),
     Autodiff:  cfg(feature = "autodiff"),
 )]
 pub trait DeltaChunkBackendExt: Backend {
