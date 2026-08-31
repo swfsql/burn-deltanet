@@ -7,16 +7,21 @@ a cleaned 2.7M-story subset of [TinyStories](https://arxiv.org/abs/2305.07759)
 (GPT-4-generated children's stories, plain ASCII).
 
 The model is deliberately tiny: two Gated DeltaNet blocks (`d_model = 32`,
-`nheads = 4`, `head_k_dim = 8`, `expand_v = 2`), each followed by the SwiGLU MLP
+`nheads = 3`, `head_k_dim = 8`, `expand_v = 2`), each followed by the SwiGLU MLP
 the reference architecture puts there, cycled to an 8-deep virtual stack over
 Multi-Gate residuals, between a tied character embedding and its transpose.
-**38,232 parameters**, of which the embedding is 1,536.
+**33,748 parameters**, of which the embedding is 1,536.
 
-That budget is `burn-mamba`'s `tiny-stories` model (39,632 parameters) to within
-4%, on purpose: same corpus, same tokenizer, same window, same optimizer
-schedule, so the block is the variable. Everything except the block and its
-`model.rs` — the corpus, the windowing, the epoch loops, the sampler — is one
-shared copy in `burn_stack::examples::tiny_stories`.
+That is `burn-mamba`'s `tiny-stories` model (39,632 parameters) to within 15%,
+on purpose: same corpus, same tokenizer, same window, same optimizer schedule,
+so the block is the variable. Everything except the block and its `model.rs` —
+the corpus, the windowing, the epoch loops, the sampler — is one shared copy in
+`burn_stack::examples::tiny_stories`. The budget is not matched exactly because
+the block's own sizing is fixed by the reference rather than by the target: with
+the output gate on, `fla/layers/gated_deltanet.py` asks for
+`nheads · head_k_dim = 0.75 · d_model` and `expand_v = 2`, which puts a layer at
+`6·d_model²` — a Transformer layer's budget — and leaves `key_dim = 24`,
+`value_dim = 48` at this width.
 
 ## The model
 
@@ -27,27 +32,30 @@ of them) plus the scalar forget gate that lets a head drop what it holds at a
 document boundary. Swapping the family is one line in `model.rs`; nothing else in
 the example knows which one it got.
 
-Two choices differ from `mnist-class`, and both are because this is a *language*
-model:
+Both examples build the same reference layer — Pre-LN mixer, Pre-LN SwiGLU MLP
+of `GatedMlpConfig::from_hidden_ratio(d_model, 4)` width, a final norm before
+the head, the reference's global init — so what differs here is only what the
+*task* changes:
 
-- **The SwiGLU MLP is on.** The reference delta-rule LMs are Llama's macro
-  architecture with the delta rule in place of self-attention, so a mixer-only
-  stack is the ablation, not the default. `GatedMlpConfig::from_hidden_ratio(32,
-  4)` states the reference sizing; its 256-alignment is not meaningful at
-  `d_model = 32` (it would make the MLP eight times the width the rule asks for),
-  so the rounding drops to 16 and the realised inner width is 96.
 - **No `grad_horizon`.** An LM is scored at *every* position, so leaving most
   applications of a shared weight undifferentiated biases every one of those
   readouts — unlike `mnist-class`, which reads out once at the end.
   `burn-mamba`'s `tiny-stories` README measures that on this same corpus.
+- **Multi-Gate residuals** instead of the plain additive skip `mnist-class` (and
+  the reference) uses. This is the one structural departure from the reference
+  architecture kept here: four pooled streams between layers cost three vectors
+  per real layer and measurably beat the single skip at this budget.
 
-The stack also carries the reference's global init (`InitPolicy`: every 2-D
-weight from `N(0, 0.02²)`, biases zeroed). That is what keeps the **tied** head
-sane at this width: Burn initialises an `Embedding` from `N(0, 1)`, which at
-`d_model = 32` would start the logits at variance ~32 — tens of bits per
-character — and spend the opening of the LR schedule shrinking them. With the
-policy on, the first batch starts at the uniform baseline, `log2(48) = 5.58`
-bits/char.
+The MLP's `ratio = 4` is the reference figure, but its 256-alignment is not
+meaningful at `d_model = 32` (it would make the MLP eight times the width the
+rule asks for), so the rounding drops to 16 and the realised inner width is 96.
+
+The global init (`InitPolicy`: every 2-D weight from `N(0, 0.02²)`, biases
+zeroed) is also what keeps the **tied** head sane at this width: Burn
+initialises an `Embedding` from `N(0, 1)`, which at `d_model = 32` would start
+the logits at variance ~32 — tens of bits per character — and spend the opening
+of the LR schedule shrinking them. With the policy on, the first batch starts at
+the uniform baseline, `log2(48) = 5.58` bits/char.
 
 ## Vocabulary
 

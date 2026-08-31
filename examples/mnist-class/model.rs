@@ -4,7 +4,7 @@
 
 use burn_deltanet::prelude::{
     DeltaBlockConfig, DeltaLatentNetConfig, DeltaLatentShape, DeltaNetworkShape,
-    GatedDeltaNet2Config,
+    GatedDeltaNet2Config, GatedMlpConfig, InitPolicy, ResidualsConfig,
 };
 use burn_stack::utils::{ClassLatent, GradHorizon, Schedule};
 
@@ -36,7 +36,8 @@ pub const N_CLASS_LATENTS: usize = 0;
 /// readout is still the sequence's last position — just not index `784 - 1`.
 pub const OUTPUT_SEQUENCE_EXTRA: usize = N_CLASS_LATENTS;
 
-/// This model configuration uses ~36K params (~146KB on disk in FP32).
+/// This model configuration uses 34,242 params (~137KB on disk in FP32), just
+/// over half of them the two layers' SwiGLU MLPs.
 ///
 /// The task is the one the `register-*` examples are *not*: a real dataset, no
 /// hand-built solution, and the block used as a sequence mixer rather than as a
@@ -51,19 +52,33 @@ pub const OUTPUT_SEQUENCE_EXTRA: usize = N_CLASS_LATENTS;
 /// erase/write split — `b` decides what to drop, `w` what to commit — and the
 /// per-key-channel `α` lets one head keep some rows for hundreds of steps while
 /// others lapse within a row of pixels.
+///
+/// **What follows the reference and what does not.** The layer is the
+/// reference's: `fla/layers/gdn2.py`'s block sizing (`key_dim = d_model`,
+/// `expand_v = 1`, the `head_v_dim` bottleneck, bias-free projections) inside
+/// Llama's macro architecture — Pre-LN mixer, Pre-LN SwiGLU MLP, a final norm
+/// before the head — under the reference's global init. The *stack* is not:
+/// cycling 2 weight sets over 16 virtual layers under a truncated
+/// [`GRAD_HORIZON`] is depth bought at no parameter cost, which the reference,
+/// training 21 distinct layers, never needs. That split is deliberate: the
+/// block and the layer are the thing being demonstrated, the stack is this
+/// example's parameter budget.
 pub fn model_config() -> DeltaLatentNetConfig {
     // d_model = 32 (intra/inter-layer expressivity, high impact on disk size)
     let d_model = 32;
     let block = GatedDeltaNet2Config::new(d_model)
         // nheads · head_k_dim = 4 · 8 = 32 = key_dim; expand_v = 1 ⇒
-        // head_v_dim = 8, so each head's state is an 8×8 matrix.
+        // head_v_dim = 8, so each head's state is an 8×8 matrix. Both ratios
+        // are the reference's (`key_dim = value_dim = hidden_size`, its 16
+        // heads of 128 at `hidden_size = 2048`), scaled down.
         .with_nheads(4)
         .with_head_k_dim(8)
         .with_expand_v(1.0)
         // The `Δ` / output-gate bottleneck rank. `0` resolves to head_v_dim (8),
         // which at this width is already the whole thing — spell it out.
         .with_bottleneck(8)
-        // The output gate: the block's own `RmsNormGated` readout.
+        // The output gate: the block's own `RmsNormGated` readout. The
+        // reference GDN-2 always has it.
         .with_use_gate(true)
         // A write replaces; nothing here reflects.
         .with_allow_neg_eigval(false)
@@ -72,7 +87,9 @@ pub fn model_config() -> DeltaLatentNetConfig {
         // have to rebuild.
         .with_use_short_conv(true)
         .with_conv_kernel(4)
-        .with_has_proj_bias(true);
+        // Every projection in the reference layer is bias-free (only the output
+        // gate's second factor carries one, which the block adds itself).
+        .with_has_proj_bias(false);
 
     // input  [batch_size, sequence_len = HEIGHT * WIDTH, input_size = 1]
     // output [batch_size, HEIGHT * WIDTH + OUTPUT_SEQUENCE_EXTRA, output_size = 10]
@@ -81,14 +98,38 @@ pub fn model_config() -> DeltaLatentNetConfig {
         DeltaLatentShape::new(
             1,
             10,
-            // two real layers, virtually cycled (2×2×2×2) to 16 for more
-            // expressivity at no parameter cost
+            // Every knob of `burn_stack::modules::NetworkShape` is stated here,
+            // defaults included, so this one block describes the whole stack.
             DeltaNetworkShape::new(N_REAL_LAYERS)
+                // two real layers, virtually cycled (2×2×2×2) to 16 for more
+                // expressivity at no parameter cost
                 .with_n_virtual_layers(Some((N_VIRTUAL_LAYERS, Schedule::Cyclic)))
                 .with_grad_horizon(GRAD_HORIZON)
-                .with_class_latents(vec![ClassLatent::Start; N_CLASS_LATENTS]),
+                .with_class_latents(vec![ClassLatent::Start; N_CLASS_LATENTS])
+                .with_ignore_first_residual(false)
+                .with_ignore_last_residual(false)
+                // The plain additive Pre-LN residual of the reference stack.
+                .with_residuals(ResidualsConfig::Standard)
+                // The channel mixer of the Llama macro architecture, which the
+                // reference keeps verbatim: a mixer-only stack is the ablation,
+                // not the default. `from_hidden_ratio`'s `ratio = 4` is the
+                // reference figure; its 256-alignment is not meaningful at
+                // `d_model = 32` (it would make the MLP eight times the width
+                // the rule asks for), so the rounding drops to 16 and the
+                // realised inner width is 96.
+                .with_mlp(Some(
+                    GatedMlpConfig::from_hidden_ratio(d_model, 4).with_multiple_of(16),
+                ))
+                // The reference global init: every 2-D weight from `N(0, 0.02²)`,
+                // biases zeroed, each block's own `A_log`/`dt_bias`/norm gains
+                // left alone.
+                .with_init(Some(InitPolicy::new())),
         )
-        .with_final_norm(false),
+        // The reference's pre-head norm (`norm_f`), which a `VocabNetwork` has
+        // unconditionally and a latent network has to ask for.
+        .with_final_norm(true)
+        // No network-level class tokens: the readout is the last pixel's.
+        .with_class_tokens(Vec::new()),
         DeltaBlockConfig::GatedDeltaNet2(block),
     )
 }

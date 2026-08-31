@@ -3,8 +3,8 @@
 #### List of Examples:
 
 - `register-*`: A two-rung ladder on the same three-register file (six state scalars, no conv, no residual), each rung the smallest task its block is *needed* for and that the rung below cannot solve: `register-majority` (the delta rule's *keyed, erasing* write, against an accumulating state) and `register-carousel` (DeltaProduct's second Householder factor, against a 3-cycle no single real reflection reaches). Each carries a hand-built exact solution and the sweeps that wall off the rung below; the single [`register/README.md`](register/README.md) covers both.
-- `mnist-class`: A small GDN-2 model classifying MNIST digits read as 784-pixel sequences — nothing hand-built. 2 real layers cycled to 16 virtual ones under a `GradHorizon::Depth(2)` truncated-BPTT cut.
-- `tiny-stories`: A 38K-parameter Gated DeltaNet language model over the characters of the cleaned [TinyStories](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean) corpus, with a tied 48-character embedding at both ends and the reference SwiGLU MLP. Its README covers the alphabet, the datasets-server paging that avoids a 673MB parquet, and the prefill-`forward()` / decode-`step()` sampler. Sized to `burn-mamba`'s example of the same name so the two are comparable.
+- `mnist-class`: A small GDN-2 model classifying MNIST digits read as 784-pixel sequences — nothing hand-built. Each layer is the reference block plus the SwiGLU MLP the reference architecture puts after it, under the reference's global init; 2 real layers are cycled to 16 virtual ones under a `GradHorizon::Depth(2)` truncated-BPTT cut.
+- `tiny-stories`: A 34K-parameter Gated DeltaNet language model over the characters of the cleaned [TinyStories](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean) corpus, with a tied 48-character embedding at both ends and the reference SwiGLU MLP. Its README covers the alphabet, the datasets-server paging that avoids a 673MB parquet, and the prefill-`forward()` / decode-`step()` sampler. Sized to `burn-mamba`'s example of the same name so the two are comparable.
 
 #### Examples Structure
 

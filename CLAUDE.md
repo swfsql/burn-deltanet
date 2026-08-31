@@ -17,9 +17,9 @@ backend (CPU, WGPU, CUDA, Metal, LibTorch, …).
 The delta-rule counterpart of [`burn-mamba`](../burn-mamba) (`../burn-mamba/CLAUDE.md`):
 same shape, different recurrence. Everything *around* the block — layers,
 (virtual-)layer stacks, bidirectional pairs, latent/vocab networks, multi-gate
-residuals, class tokens, schedules, the Muon plan — lives in
-**[`burn-stack`](../burn-stack)** (`../burn-stack/CLAUDE.md`), which is
-block-agnostic by construction. This crate supplies the four `Block`
+residuals, class tokens, schedules, the serialisable network shapes, the Muon
+plan — lives in **[`burn-stack`](../burn-stack)** (`../burn-stack/CLAUDE.md`),
+which is block-agnostic by construction. This crate supplies the four `Block`
 implementations plus the runtime-selectable `Delta*` enums in `src/unified/`.
 **Never push anything delta-specific into `burn-stack`** — a name, a shape
 assumption, or a doc reference. If it needs one, it belongs here.
@@ -120,8 +120,9 @@ src/
    │                 Block/BlockConfig for all four families
    ├─ block.rs       DeltaBlock/DeltaBlockConfig: the family enum, itself a Block
    ├─ network.rs     DeltaLatentNet / DeltaVocabNet = the burn-stack containers
-   │                 at DeltaBlock (+ Configs, shared shapes, the init policy)
-   ├─ bidi.rs        DeltaBidiLayers (+ Config)
+   │                 at DeltaBlock; the shapes are aliases of burn-stack's, so
+   │                 what is defined here is the `{ shape, block }` Configs
+   ├─ bidi.rs        DeltaBidiLayers (+ Config); DeltaBidiShape = BidiShape
    └─ tests/         burn-stack containers through real blocks: layers, network,
                      bidi, optim
 scripts/gen_fixture.py   regenerates src/delta/tests/reference.rs from FLA

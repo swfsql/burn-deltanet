@@ -31,9 +31,11 @@ const GRAD_HORIZON: Option<GradHorizon> = None;
 /// 48-character embedding and its transpose, each followed by the SwiGLU MLP the
 /// reference architecture puts there.
 ///
-/// Sized to `burn-mamba`'s `tiny-stories` model (~40K parameters at
-/// `d_model = 32`) so the two are a fair comparison on one corpus, one
-/// tokenizer and one optimizer schedule — the block is the variable.
+/// 33,748 parameters — `burn-mamba`'s `tiny-stories` model (39,632 at the same
+/// `d_model = 32`) to within 15%, so the two are a fair comparison on one
+/// corpus, one tokenizer and one optimizer schedule, with the block as the
+/// variable. The budget is not matched exactly because the block's sizing is
+/// fixed by the reference's parameter allocation (below), not by the target.
 ///
 /// Why Gated DeltaNet 1 rather than the other three families: it is the one the
 /// deployed language models use (Qwen3-Next), and it is the smallest family that
@@ -42,17 +44,36 @@ const GRAD_HORIZON: Option<GradHorizon> = None;
 /// forget gate that lets a head drop the whole state at a document boundary.
 /// Swapping the family is one line here: `DeltaBlockConfig::` picks it, and
 /// nothing else in the example knows which one it got.
+///
+/// **What follows the reference and what does not.** The layer is the
+/// reference's, down to the parameter allocation (`~6·d_model²`, below) and the
+/// global init, inside Llama's macro architecture the paper states it uses:
+/// Pre-LN mixer, Pre-LN SwiGLU MLP, a final norm before the head. The *stack*
+/// is not: cycling 2 weight sets over 8 virtual layers, and mixing the layers
+/// through [`ResidualsConfig::MultiGate`] instead of one additive skip, are
+/// depth and capacity bought at (almost) no parameter cost, which the
+/// reference, training 21 distinct layers, never needs. Both are measured wins
+/// on this corpus at this budget — `burn-mamba`'s README has the numbers — and
+/// both are stated explicitly below rather than left to a default.
 pub fn model_config() -> DeltaVocabNetConfig {
     // d_model = 32 (intra/inter-layer expressivity, high impact on disk size)
     let d_model = 32;
     let block = GatedDeltaNet1Config::new(d_model)
-        // nheads · head_k_dim = 4 · 8 = 32 = key_dim (expand_k = 1); expand_v = 2
-        // ⇒ head_v_dim = 16, so each head's state is an 8×16 matrix — 512 state
-        // scalars per block, which is what has to carry a whole story.
-        .with_nheads(4)
+        // The reference's parameter allocation for a gated block: with the
+        // output gate on, `nheads · head_k_dim = 0.75 · d_model` and
+        // `expand_v = 2`, so `q`/`k` cost 0.75·d² each and `v`/`gate`/`o` 1.5·d²
+        // each — 6·d² in total, a Transformer layer's budget (the NOTE in
+        // `fla/layers/gated_deltanet.py`, whose own defaults are 6 heads of 256
+        // at `hidden_size = 2048`).
+        //
+        // Here: 3 · 8 = 24 = 0.75 · 32 = key_dim; expand_v = 2 ⇒ head_v_dim = 16
+        // and value_dim = 48 = 1.5 · 32. Each head's state is an 8×16 matrix —
+        // 384 state scalars per block, which is what has to carry a whole story.
+        .with_nheads(3)
         .with_head_k_dim(8)
         .with_expand_v(2.0)
-        // The block's own gated output RMSNorm.
+        // The block's own gated output RMSNorm (`use_gate`, on in the
+        // reference — and what the 0.75 above pays for).
         .with_use_gate(true)
         // A write replaces; nothing here reflects.
         .with_allow_neg_eigval(false)
@@ -68,13 +89,19 @@ pub fn model_config() -> DeltaVocabNetConfig {
         DeltaVocabShape::new(
             // the 48 case-folded characters the corpus actually contains
             VOCAB_SIZE,
+            // Every knob of `burn_stack::modules::NetworkShape` is stated here,
+            // defaults included, so this one block describes the whole stack.
             DeltaNetworkShape::new(N_REAL_LAYERS)
                 .with_n_virtual_layers(Some((N_VIRTUAL_LAYERS, Schedule::Cyclic)))
                 .with_grad_horizon(GRAD_HORIZON)
+                // No stack-level class latents: every position is a character.
+                .with_class_latents(Vec::new())
+                .with_ignore_first_residual(false)
+                .with_ignore_last_residual(false)
                 // Multi-Gate Residuals: `n_stream` pooled streams between layers
-                // instead of one additive skip, at the cost of three vectors per
-                // real layer. `per_virtual_layer: false` keeps one set per
-                // *real* layer, reused across the virtual passes.
+                // instead of the reference's one additive skip, at the cost of
+                // three vectors per real layer. `per_virtual_layer: false` keeps
+                // one set per *real* layer, reused across the virtual passes.
                 .with_residuals(ResidualsConfig::MultiGate {
                     n_stream: 4,
                     // Start every stream on an equal, unbiased gate and let

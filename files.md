@@ -320,17 +320,20 @@ it is used as-is. The enum's variant name enters the parameter paths, which is
 why a `ProjSpec` matches container and weight separately.
 
 ### `network.rs`
-- `DeltaNetworkShape` — the block-independent stack knobs (real/virtual layers,
-  `grad_horizon`, class latents, residuals, mlp, init), shared by both networks;
-  `layers()` builds the `LayersBuilder`.
-- `DeltaLatentShape` / `DeltaVocabShape` — each network's own knobs on top, with
-  a `build<C: BlockConfig>` that any statically named family can use too.
+- `DeltaNetworkShape` / `DeltaLatentShape` / `DeltaVocabShape` — **aliases** of
+  `burn_stack::modules::{NetworkShape, LatentShape, VocabShape}`. Nothing about
+  a layer stack is delta-specific, so the knobs (real/virtual layers,
+  `grad_horizon`, class markers, residuals, mlp, init, the I/O boundary) are
+  declared and documented once, there; `build<C: BlockConfig>` on a shape is
+  what a statically named family uses.
 - `DeltaLatentNet` / `DeltaVocabNet` — aliases of `burn-stack`'s
-  `LatentNetwork`/`VocabNetwork` at `DeltaBlock`; `DeltaLatentNetConfig` /
-  `DeltaVocabNetConfig` (`{ shape, block }`) carry `init` + `muon_plan`.
-- `init()` applies `DeltaNetworkShape::init` (an `InitPolicy`) after building,
-  filling in the residual depth the policy cannot know: layers × branches per
-  layer (2 with an MLP, 1 without).
+  `LatentNetwork`/`VocabNetwork` at `DeltaBlock`. What this file *defines* is
+  `DeltaLatentNetConfig` / `DeltaVocabNetConfig` (`{ shape, block }` — the
+  family is chosen in `block`), whose `init` + `muon_plan` forward to the
+  shape's.
+- The shape's `init` applies its `InitPolicy` after building, filling in the
+  residual depth the policy cannot know: layers × branches per layer (2 with an
+  MLP, 1 without).
 - A trailing `mod model_config_ext` implements `burn_stack::modules::
   ModelConfigExt` (`init` + `muon_plan`) for both configs, forwarding to the
   inherent methods. It has to live in the lib: the trait is `burn-stack`'s and
@@ -340,9 +343,10 @@ why a `ProjSpec` matches container and weight separately.
 suffix length.
 
 ### `bidi.rs`
-- `DeltaBidiShape` (+ `build`), `DeltaBidiLayers` = `BidiLayers<DeltaBlock>`,
-  `DeltaBidiLayersConfig` (`init`, `muon_plan`). No `step` — the reversed pass
-  is non-causal.
+- `DeltaBidiShape` = `burn_stack::modules::BidiShape` (its own shape, not a
+  `NetworkShape`: per-pair merges, a `BidiSchedule`, no mlp/init), `DeltaBidiLayers`
+  = `BidiLayers<DeltaBlock>`, and the `DeltaBidiLayersConfig` defined here
+  (`init`, `muon_plan`). No `step` — the reversed pass is non-causal.
 
 ### `tests/`
 `layers.rs` (stack parity, virtual layers, MLP, multi-gate, `grad_horizon`,
