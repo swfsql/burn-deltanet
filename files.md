@@ -77,22 +77,33 @@ the Householder's spectrum at `{1, 1−β}` and so moves the contract/reflect
 decision entirely onto `β`.
 
 ### `qkv.rs`
+- `WriteGate { Fixed, Scalar, Channel }` — how finely a family may separate the
+  erase from the write; a `#[module(skip)]` constant.
 - `QkvProjection { in_proj, conv, qk_activation, qk_norm, nheads, n_value_heads,
-  head_k_dim, head_v_dim, n_householder, has_beta, has_gate, allow_neg_eigval,
+  head_k_dim, head_v_dim, n_householder, write_gate, has_gate, allow_neg_eigval,
   extra_channels }`, `QkvProjectionConfig`.
 - `forward(x_bsd, window) -> (Qkv, next_window)`, `step(x_bd, window) -> (QkvStep,
   next_window)`.
-- `Qkv { q_bshk, k_bShk, v_bShv, beta_bSh, gate_bshv, extra_bsx }`;
-  `QkvStep` is the same with an explicit micro-step axis instead of a sequence.
+- `Qkv { q_bshk, k_bShk, v_bShv, erase_bShK, write_bShV, gate_bshv, extra_bsx }`
+  — the gate axes `K`/`V` are `1` or the full channel width; `QkvStep` is the
+  same with an explicit micro-step axis instead of a sequence.
 - `segments() -> Vec<(&'static str, usize)>` — the column widths, and the single
   source of truth for both the forward's split and the Muon seams.
-- `key_dim`, `value_dim`, `conv_dim`, `d_in_proj`, `state_heads`,
-  `heads_per_group`, `zero_conv_window`.
+- `key_dim`, `value_dim`, `conv_dim`, `write_gate_width`, `d_in_proj`,
+  `state_heads`, `heads_per_group`, `conv_kernel`, `zero_conv_window`,
+  `expand_to_value_heads` (public: a family may have its own query/key-side
+  tensor to replicate).
 
-Three decisions live here:
-- **The micro-step fold.** `k`/`v`/`β` are projected `n_householder`-wide and
-  returned at length `sequence · u`, in micro-step order. `u = 1` is the plain
-  sequence, so nothing downstream has a special case.
+Four decisions live here:
+- **The micro-step fold.** `k`/`v` and the write gate are projected
+  `n_householder`-wide and returned at length `sequence · u`, in micro-step
+  order. `u = 1` is the plain sequence, so nothing downstream has a special
+  case.
+- **The gate squashing.** `squash_write` turns a raw segment into the
+  `(erase, write)` pair at its broadcast width: `σ` on both, and
+  `allow_neg_eigval` doubles the **erase** only — under `Fixed`/`Scalar` the one
+  number is both halves, so it is doubled there too, matching the scalar
+  reference's `beta = beta * 2`.
 - **Grouped values.** `q`/`k` are replicated up to `n_value_heads` immediately
   after the head split, so the delta rule, caches and norms see one head count.
 - **Activation placement.** `activation_fused_into_conv()` — the convolution's
@@ -259,7 +270,7 @@ Every block exposes `forward(x_bsd, cache, path)`, `step(x_bd, cache)`,
 - Parameterised by `expand_k`/`expand_v` ratios of `d_model` (the paper's knobs);
   `scaled_dim` asserts the ratio lands on a whole number of channels.
 - `use_beta = false` fixes `β ≡ 1`; `qk_activation`/`qk_norm` configurable.
-- `g_bsh: None` at the `DeltaInput` — that is the whole difference from Gated
+- `g_bshK: None` at the `DeltaInput` — that is the whole difference from Gated
   DeltaNet.
 
 ### `src/gated_deltanet_1/gated_deltanet_1.rs`
@@ -271,9 +282,17 @@ Every block exposes `forward(x_bsd, cache, path)`, `step(x_bd, cache)`,
 
 ### `src/gated_deltanet_2/gated_deltanet_2.rs`
 - `GatedDeltaNet2 { qkv, gate: ChannelForgetGate, out_gate: Option<Linear>,
-  norm, out_proj }`, `GatedDeltaNet2Config`; `bottleneck()`.
+  norm, out_proj }`, `GatedDeltaNet2Config`; `bottleneck()`, `n_householder()`.
 - Same knobs as v1 (`head_k_dim`, `expand_v`, `n_value_heads`) plus the
   bottleneck rank (`0` ⇒ `head_v_dim`, the reference's choice).
+- `n_householder` (default 1) takes DeltaProduct's micro-step fold onto these
+  gates: `forward`/`step` place `q` on the last micro-step and the per-channel
+  `g` on the first exactly as `delta_product.rs` does, and `step` keeps its
+  direct `delta_step` call at `u = 1`. `muon_projections` then lists each
+  factor's `k`/`v`/`erase`/`write` map separately.
+- `allow_neg_eigval: Option<bool>`, resolved by `allow_neg_eigval_resolved()`
+  to `n_householder > 1` when unset — the third sentinel knob here, beside
+  `n_value_heads` and `bottleneck`.
 - Two low-rank bottlenecks, `Δ` and the output gate: their **first** factors are
   ordinary `extra` segments of the fused projection, their second factors are
   `ChannelForgetGate::up` and `out_gate`.

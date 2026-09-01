@@ -339,7 +339,7 @@ fn accumulator(device: &Device, alpha: f64) -> DeltaLatentNet {
         .with_expand_v(HEAD_V_DIM as f64 / NUM_REGISTERS as f64)
         .with_bottleneck(1)
         .with_use_gate(false)
-        .with_allow_neg_eigval(false)
+        .with_allow_neg_eigval(Some(false))
         .with_use_short_conv(false)
         .with_lower_bound(LOWER_BOUND)
         .with_has_proj_bias(true);

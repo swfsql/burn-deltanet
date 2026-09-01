@@ -72,16 +72,35 @@ fn gdn2_seams_match_its_projection() {
     let device: Device = Default::default();
     for n_value_heads in [0, 4] {
         for use_gate in [true, false] {
-            let config = crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(16)
-                .with_nheads(2)
-                .with_head_k_dim(4)
-                .with_n_value_heads(n_value_heads)
-                .with_use_gate(use_gate);
-            let block = config.init(&device);
-            let [_d_model, in_proj_out] = block.qkv.in_proj.weight.dims();
-            check_seams_cover_the_weight(config.muon_projections(), in_proj_out, 16);
+            for n_householder in [1, 2, 3] {
+                let config = crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(16)
+                    .with_nheads(2)
+                    .with_head_k_dim(4)
+                    .with_n_value_heads(n_value_heads)
+                    .with_n_householder(n_householder)
+                    .with_use_gate(use_gate);
+                let block = config.init(&device);
+                let [_d_model, in_proj_out] = block.qkv.in_proj.weight.dims();
+                check_seams_cover_the_weight(config.muon_projections(), in_proj_out, 16);
+            }
         }
     }
+}
+
+/// Each micro-step's `k`, `v`, `b` and `w` map is its own seam, as
+/// [DeltaProduct](crate::delta_product)'s are.
+#[test]
+fn gdn2_lists_every_householder_factor_separately() {
+    let config = crate::gated_deltanet_2::prelude::GatedDeltaNet2Config::new(16)
+        .with_nheads(2)
+        .with_head_k_dim(4)
+        .with_n_householder(2);
+    let specs = config.muon_projections();
+    let in_proj = specs.iter().find(|s| s.path.contains("in_proj")).unwrap();
+    assert_eq!(
+        vec!["q", "k", "k", "v", "v", "erase", "erase", "write", "write", "dt_in", "gate_in"],
+        in_proj.segments.iter().map(|s| s.name).collect::<Vec<_>>(),
+    );
 }
 
 /// GDN-2 is the family with *no* per-head scalar channel: its erase, write and

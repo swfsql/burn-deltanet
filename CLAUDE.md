@@ -88,7 +88,7 @@ src/
 │  ├─ gate.rs        ForgetGate: the Mamba-2 decay parameterisation (Δ, A, dt_bias)
 │  ├─ norm.rs        QkActivation / QkNorm (L2 bounds the Householder) + OutNorm
 │  └─ qkv.rs         QkvProjection: the fused `[q|k|v|β|gate|extra]` front-end,
-│                    head split, GVA expansion, micro-step fold (DeltaProduct)
+│                    head split, GVA expansion, micro-step fold (`n_householder`)
 ├─ delta/            the delta-rule core, shared by all four families
 │  ├─ mod.rs         module doc: the recurrence, the WY derivation, notation table
 │  ├─ path.rs        DeltaInput (what a block hands over) + DeltaPath (selector)
@@ -111,7 +111,7 @@ src/
 ├─ gated_deltanet_1/   Gated DeltaNet: + the scalar forget gate — block + config
 │                    (head_k_dim/expand_v, grouped values)
 ├─ gated_deltanet_2/   GDN-2: erase/write/decay all per channel — block + config
-│                    (two low-rank bottlenecks)
+│                    (two low-rank bottlenecks, optional Householder product)
 ├─ delta_product/    DeltaProduct: u Householder factors per transition — block +
 │                    config; q on the last micro-step, α on the first
 └─ unified/          the runtime-selectable API + where the families plug in
@@ -286,17 +286,21 @@ before** padding — normalising a zero pad row would divide by its own zero nor
   channel (two low-rank bottlenecks produce them). Deleting one fact and
   accumulating into another become single-token operations. The per-channel
   decay is the one thing that does not factor out of the chunk's key
-  contraction — see `src/delta/decay.rs`.
+  contraction — see `src/delta/decay.rs`. `n_householder` takes DeltaProduct's
+  fold onto these gates (default `1`, the published family); past it
+  `allow_neg_eigval` — an `Option<bool>` here — turns itself on.
 - **DeltaProduct** — `u = n_householder` micro-steps per token. `u = 1` **is**
   Gated DeltaNet 1 exactly (asserted by running both from one set of weights).
   `allow_neg_eigval` defaults **on** here: a product of contractions would throw
   away what `u > 1` buys.
 
-### DeltaProduct's fold (the one non-obvious mechanism)
+### The micro-step fold (the one non-obvious mechanism)
 
-No new kernel. `QkvProjection` projects `k`/`v`/`β` `u`-wide and unrolls them to
-length `sequence · u`; the ordinary delta rule then runs over the longer
-sequence. Two placements make that exactly the intended recurrence:
+DeltaProduct's, and GDN-2's under `n_householder > 1`. No new kernel:
+`QkvProjection` projects `k`/`v`/`β` (resp. the per-channel `b`/`w`) `u`-wide
+and unrolls them to length `sequence · u`; the ordinary delta rule then runs
+over the longer sequence. Two placements make that exactly the intended
+recurrence:
 
 - **`q` on the last micro-step** (zero elsewhere) — the readout follows all `u`
   writes, and the intervening outputs are sliced away.

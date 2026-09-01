@@ -133,7 +133,7 @@ fn forward_matches_step_without_a_convolution() {
 #[test]
 fn forward_matches_step_with_negative_eigenvalues() {
     check_forward_matches_step(
-        tiny_config(16).with_allow_neg_eigval(true),
+        tiny_config(16).with_allow_neg_eigval(Some(true)),
         10,
         DeltaPath::chunk_len(4),
         1e-3,
@@ -277,6 +277,158 @@ fn forward_matches_step_with_a_custom_bottleneck() {
         DeltaPath::chunk_len(4),
         1e-4,
     );
+}
+
+/// `n_householder > 1` folds `u` micro-steps into the core's sequence, so a
+/// chunk boundary can fall *inside* a token's Householder product — and the
+/// per-channel gate rides the first micro-step of each token, not every one. It
+/// must not matter: `forward` still equals `step` unrolled.
+#[test]
+fn forward_matches_step_across_householder_counts_and_chunk_lengths() {
+    for n_householder in [1, 2, 3] {
+        for chunk_len in [2, 3, 4, 8] {
+            check_forward_matches_step(
+                tiny_config(16).with_n_householder(n_householder),
+                7,
+                DeltaPath::chunk_len(chunk_len),
+                1e-3,
+            );
+        }
+        check_forward_matches_step(
+            tiny_config(16).with_n_householder(n_householder),
+            7,
+            DeltaPath::Recurrent,
+            1e-3,
+        );
+    }
+}
+
+#[test]
+fn forward_matches_step_with_householders_and_grouped_values() {
+    check_forward_matches_step(
+        tiny_config(16)
+            .with_n_householder(2)
+            .with_n_value_heads(4)
+            .with_expand_v(2.0),
+        6,
+        DeltaPath::chunk_len(4),
+        1e-3,
+    );
+}
+
+#[test]
+fn split_forward_matches_a_single_forward_with_householders() {
+    let device: Device = Default::default();
+    let (batch, sequence, d_model, split) = (2, 10, 16, 3);
+    let block = tiny_config(d_model).with_n_householder(3).init(&device);
+    let input = random_input(batch, sequence, d_model, &device);
+    let path = DeltaPath::chunk_len(4);
+
+    let (y_whole, cache_whole) = block.forward(input.clone(), None, path);
+    let (y_head, cache_mid) = block.forward(input.clone().narrow(1, 0, split), None, path);
+    let (y_tail, cache_end) = block.forward(
+        input.narrow(1, split, sequence - split),
+        Some(cache_mid),
+        path,
+    );
+
+    let diff = max_abs_diff(y_whole, Tensor::cat(vec![y_head, y_tail], 1));
+    assert!(diff < 1e-3, "split prefill differs by {diff}");
+    assert_caches_match(&cache_whole, &cache_end, "whole vs split", 1e-3);
+}
+
+#[test]
+fn forward_and_step_agree_on_gradients_with_householders() {
+    let device: Device = Device::default().autodiff();
+    let (batch, sequence, d_model) = (2, 6, 16);
+    let block = tiny_config(d_model).with_n_householder(2).init(&device);
+    let input = random_input(batch, sequence, d_model, &device);
+    let head = random_input(batch, sequence, d_model, &device);
+
+    let grads_of = |y: Tensor<3>| {
+        let grads = (y * head.clone()).sum().backward();
+        (
+            block.qkv.in_proj.weight.val().grad(&grads).expect("in_proj"),
+            block.out_proj.weight.val().grad(&grads).expect("out_proj"),
+            block.gate.up.weight.val().grad(&grads).expect("gate.up"),
+        )
+    };
+
+    let (f_in, f_out, f_up) =
+        grads_of(block.forward(input.clone(), None, DeltaPath::chunk_len(4)).0);
+    let (s_in, s_out, s_up) = grads_of(unroll_steps(&block, input, None).0);
+
+    for (name, diff) in [
+        ("in_proj", max_abs_diff(f_in, s_in)),
+        ("out_proj", max_abs_diff(f_out, s_out)),
+        ("gate.up", max_abs_diff(f_up, s_up)),
+    ] {
+        assert!(diff < 1e-3, "grad of {name} differs by {diff}");
+    }
+}
+
+/// `allow_neg_eigval` follows `n_householder` unless it is asked outright: a
+/// product of pure contractions gives up what the extra factors buy, but the
+/// published `u = 1` family contracts.
+#[test]
+fn negative_eigenvalues_follow_the_householder_count_unless_asked() {
+    let config = |n_householder| tiny_config(16).with_n_householder(n_householder);
+    assert!(!config(1).allow_neg_eigval_resolved());
+    assert!(config(2).allow_neg_eigval_resolved());
+    assert!(config(3).allow_neg_eigval_resolved());
+    // An explicit choice wins at either end.
+    assert!(config(1).with_allow_neg_eigval(Some(true)).allow_neg_eigval_resolved());
+    assert!(!config(3).with_allow_neg_eigval(Some(false)).allow_neg_eigval_resolved());
+
+    let device: Device = Default::default();
+    assert!(config(2).init(&device).qkv.allow_neg_eigval);
+    assert!(
+        !config(2)
+            .with_allow_neg_eigval(Some(false))
+            .init(&device)
+            .qkv
+            .allow_neg_eigval
+    );
+}
+
+/// The forced-contraction override at `u > 1` is still the same recurrence.
+#[test]
+fn forward_matches_step_with_householders_and_contractions_only() {
+    check_forward_matches_step(
+        tiny_config(16)
+            .with_n_householder(2)
+            .with_allow_neg_eigval(Some(false)),
+        8,
+        DeltaPath::chunk_len(4),
+        1e-3,
+    );
+}
+
+/// `u` widens the projection, not the state: the fused `in_proj` grows by `u`
+/// copies of `k`, `v`, `b` and `w`, and the recurrent state does not move.
+#[test]
+fn householders_widen_the_projection_but_not_the_state() {
+    let device: Device = Default::default();
+    let (batch, sequence, d_model) = (3, 5, 16);
+    let mut widths = vec![];
+    for n_householder in [1, 2, 4] {
+        let block = tiny_config(d_model)
+            .with_n_householder(n_householder)
+            .init(&device);
+        assert_eq!(n_householder, block.n_householder());
+        let (y, cache) = block.forward(
+            random_input(batch, sequence, d_model, &device),
+            None,
+            DeltaPath::chunk(),
+        );
+        assert_eq!([batch, sequence, d_model], y.dims());
+        assert_eq!([batch, 2, 8, 8], cache.state_bhkv.dims());
+        widths.push(block.qkv.in_proj.weight.dims()[1]);
+    }
+    // q, the two bottlenecks and the biases are shared; k|v|b|w scale with `u`.
+    let per_factor = widths[1] - widths[0];
+    assert!(per_factor > 0);
+    assert_eq!(widths[0] + 3 * per_factor, widths[2]);
 }
 
 #[test]

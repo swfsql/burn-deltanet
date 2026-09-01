@@ -81,7 +81,7 @@ pub fn model_config() -> DeltaLatentNetConfig {
         // reference GDN-2 always has it.
         .with_use_gate(true)
         // A write replaces; nothing here reflects.
-        .with_allow_neg_eigval(false)
+        .with_allow_neg_eigval(Some(false))
         // A 4-wide causal depthwise conv over [q|k|v]: a pixel's immediate
         // neighbours along the scan line, which the recurrence would otherwise
         // have to rebuild.

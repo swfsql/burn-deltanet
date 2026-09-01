@@ -36,6 +36,21 @@
 //! timescale, so a head can hold some keys for a long time while letting others
 //! lapse, instead of decaying everything it knows at one rate.
 //!
+//! ## Householder products
+//!
+//! [`GatedDeltaNet2Config::n_householder`] takes
+//! [DeltaProduct](crate::delta_product)'s `u` micro-steps per token onto these
+//! gates: `k`, `v`, `b` and `w` are projected `u`-wide and unrolled into the
+//! sequence, `q` reads on the last micro-step and `diag(α)` decays on the
+//! first, so one transition is a product of `u` generalised Householders. The
+//! default is `1` — the family as published — and past it
+//! [`GatedDeltaNet2Config::allow_neg_eigval`] turns itself on, since a product
+//! of pure contractions gives up what the extra factors are for. Neither this
+//! crate's other
+//! families nor the reference combine the two, so `u > 1` here is an
+//! extrapolation, exact in the same sense the `u = 1` case is but with no
+//! published numbers behind it.
+//!
 //! ## Shape
 //!
 //! Two low-rank bottlenecks, as in the reference: the per-channel `Δ` and the
@@ -99,6 +114,11 @@ impl GatedDeltaNet2 {
     /// Number of projected query/key heads.
     pub fn n_qk_heads(&self) -> usize {
         self.qkv.nheads
+    }
+    /// Householder factors per transition (`1` unless the block was configured
+    /// as a [DeltaProduct](crate::delta_product)).
+    pub fn n_householder(&self) -> usize {
+        self.qkv.n_householder
     }
     /// Query/key width per head — the state's row rank.
     pub fn head_k_dim(&self) -> usize {
@@ -192,30 +212,65 @@ impl GatedDeltaNet2 {
 
         let (qkv, next_conv_bwc) = self.qkv.forward(input_bsd, conv_bwc);
         let (decay_in_bsr, gate_in_bsr) = self.bottlenecks(qkv.extra_bsx);
+        let (u, nheads, head_k_dim) = (self.n_householder(), self.nheads(), self.head_k_dim());
+        let device = qkv.q_bshk.device();
 
         // The decay rides the query/key heads, so it is replicated across a
         // grouped-value group exactly as `q`, `k` and the erase gate are.
         let g_bshk: Tensor<4> = self
             .qkv
             .expand_to_value_heads::<4, 5>(self.gate.log_decay::<3, 4>(decay_in_bsr));
-        assert_eq!(
-            [batch, sequence, self.nheads(), self.head_k_dim()],
-            g_bshk.dims()
-        );
+        assert_eq!([batch, sequence, nheads, head_k_dim], g_bshk.dims());
 
-        let (y_bshv, next_state_bhkv) = DeltaInput {
-            q_bshk: qkv.q_bshk,
+        // ── q on the last micro-step; zero on the others ────────────────────
+        let q_bShk = if u == 1 {
+            qkv.q_bshk
+        } else {
+            let quiet = Tensor::<5>::zeros(
+                Shape::new([batch, sequence, u - 1, nheads, head_k_dim]),
+                &device,
+            );
+            Tensor::cat(vec![quiet, qkv.q_bshk.unsqueeze_dim(2)], 2)
+                .reshape([batch, sequence * u, nheads, head_k_dim])
+        };
+
+        // ── the forget gate on the first micro-step; zero on the others ─────
+        // `g = 0` is `α = 1` per channel, so the intervening micro-steps decay
+        // nothing and `diag(α)` applies once per *token*, ahead of the product.
+        let g_bShk = if u == 1 {
+            g_bshk
+        } else {
+            let quiet = Tensor::<5>::zeros(
+                Shape::new([batch, sequence, u - 1, nheads, head_k_dim]),
+                &device,
+            );
+            Tensor::cat(vec![g_bshk.unsqueeze_dim(2), quiet], 2)
+                .reshape([batch, sequence * u, nheads, head_k_dim])
+        };
+
+        let (y_bShv, next_state_bhkv) = DeltaInput {
+            q_bshk: q_bShk,
             k_bshk: qkv.k_bShk,
             v_bshv: qkv.v_bShv,
             erase_bshK: qkv.erase_bShK,
             write_bshV: qkv.write_bShV,
-            g_bshK: Some(g_bshk),
+            g_bshK: Some(g_bShk),
             state_bhkv,
             scale: None,
         }
         .run(path);
+
+        // ── Keep only the last micro-step of each token ─────────────────────
+        let y_bshv = if u == 1 {
+            y_bShv
+        } else {
+            y_bShv
+                .reshape([batch, sequence, u, nheads, self.head_v_dim()])
+                .narrow(2, u - 1, 1)
+                .squeeze_dim(2)
+        };
         assert_eq!(
-            [batch, sequence, self.nheads(), self.head_v_dim()],
+            [batch, sequence, nheads, self.head_v_dim()],
             y_bshv.dims()
         );
 
@@ -262,21 +317,47 @@ impl GatedDeltaNet2 {
 
         let (qkv, next_conv_bwc) = self.qkv.step(input_bd, conv_bwc);
         let (decay_in_br, gate_in_br) = self.bottlenecks(qkv.extra_bx);
+        let (u, nheads, head_k_dim) = (self.n_householder(), self.nheads(), self.head_k_dim());
         let g_bhk: Tensor<3> = self
             .qkv
             .expand_to_value_heads::<3, 4>(self.gate.log_decay::<2, 3>(decay_in_br));
 
-        // `n_householder == 1`, so the micro-step axis is a singleton here.
-        let (y_bhv, next_state_bhkv) = delta_step(
-            qkv.q_bhk,
-            qkv.k_buhk.squeeze_dim(1),
-            qkv.v_buhv.squeeze_dim(1),
-            qkv.erase_buhK.squeeze_dim(1),
-            qkv.write_buhV.squeeze_dim(1),
-            Some(g_bhk),
-            state_bhkv,
-            1.0 / (self.head_k_dim() as f64).sqrt(),
-        );
+        let (y_bhv, next_state_bhkv) = if u == 1 {
+            // The micro-step axis is a singleton, so this is the recurrence
+            // itself — no fold, no slice.
+            delta_step(
+                qkv.q_bhk,
+                qkv.k_buhk.squeeze_dim(1),
+                qkv.v_buhv.squeeze_dim(1),
+                qkv.erase_buhK.squeeze_dim(1),
+                qkv.write_buhV.squeeze_dim(1),
+                Some(g_bhk),
+                state_bhkv,
+                1.0 / (head_k_dim as f64).sqrt(),
+            )
+        } else {
+            // One token's `u` micro-steps are a length-`u` sequence for the
+            // core, placed exactly as `forward` places them.
+            let device = qkv.q_bhk.device();
+            let quiet =
+                Tensor::<4>::zeros(Shape::new([batch, u - 1, nheads, head_k_dim]), &device);
+            let q_buhk = Tensor::cat(vec![quiet.clone(), qkv.q_bhk.unsqueeze_dim(1)], 1);
+            let g_buhk = Tensor::cat(vec![g_bhk.unsqueeze_dim(1), quiet], 1);
+
+            let (y_buhv, next_state_bhkv) = DeltaInput {
+                q_bshk: q_buhk,
+                k_bshk: qkv.k_buhk,
+                v_bshv: qkv.v_buhv,
+                erase_bshK: qkv.erase_buhK,
+                write_bshV: qkv.write_buhV,
+                g_bshK: Some(g_buhk),
+                state_bhkv,
+                scale: None,
+            }
+            .run(DeltaPath::Recurrent);
+
+            (y_buhv.narrow(1, u - 1, 1).squeeze_dim(1), next_state_bhkv)
+        };
 
         let out_gate_bhv = self.out_gate.as_ref().map(|out_gate| {
             out_gate
@@ -319,6 +400,16 @@ pub struct GatedDeltaNet2Config {
     #[config(default = 4)]
     pub nheads: usize,
 
+    /// Householder factors per transition — [DeltaProduct](crate::delta_product)'s
+    /// `u`, on GDN-2's per-channel gates. `1` is plain GDN-2.
+    ///
+    /// The decoupled gates make each factor `I − kᵢ (bᵢ ⊙ kᵢ)ᵀ` a *generalised*
+    /// Householder already, so `u > 1` composes those rather than pure
+    /// reflections; reaching the reflections the product argument is stated for
+    /// wants [`Self::allow_neg_eigval`], which follows this field by default.
+    #[config(default = 1)]
+    pub n_householder: usize,
+
     /// Number of value heads; `0` means "same as `nheads`". A larger multiple
     /// gives grouped values: several value heads share one query/key head.
     #[config(default = 0)]
@@ -344,8 +435,13 @@ pub struct GatedDeltaNet2Config {
     /// Let the **erase** gate reach `(0, 2)` instead of `(0, 1)`, so the
     /// Householder can *reflect* rather than only contract. The write gate is
     /// unaffected — that asymmetry is the point of decoupling them.
-    #[config(default = false)]
-    pub allow_neg_eigval: bool,
+    ///
+    /// `None` — the default — follows [`Self::n_householder`]: off at `u = 1`,
+    /// which is the published family, and **on** past it, where a product of
+    /// pure contractions would throw away exactly what the extra factors buy.
+    /// `Some(_)` decides it outright, at any `u`.
+    #[config(default = "None")]
+    pub allow_neg_eigval: Option<bool>,
 
     /// Use the causal short convolution.
     #[config(default = true)]
@@ -411,6 +507,12 @@ impl GatedDeltaNet2Config {
         rounded as usize
     }
 
+    /// Whether the erase gate actually reaches `(0, 2)`: the explicit choice,
+    /// or `n_householder > 1` when unset.
+    pub fn allow_neg_eigval_resolved(&self) -> bool {
+        self.allow_neg_eigval.unwrap_or(self.n_householder > 1)
+    }
+
     /// The bottleneck rank actually used (`head_v_dim` when unset).
     pub fn bottleneck_resolved(&self) -> usize {
         if self.bottleneck == 0 {
@@ -432,6 +534,7 @@ impl GatedDeltaNet2Config {
 
     /// Allocate and initialise the block on `device`.
     pub fn init(&self, device: &Device) -> GatedDeltaNet2 {
+        assert!(self.n_householder > 0, "n_householder must be at least 1");
         let value_dim = self.value_dim();
         let bottleneck = self.bottleneck_resolved();
         let extra_channels = bottleneck + if self.use_gate { bottleneck } else { 0 };
@@ -443,11 +546,12 @@ impl GatedDeltaNet2Config {
             self.head_v_dim(),
         )
         .with_n_value_heads(self.n_value_heads)
+        .with_n_householder(self.n_householder)
         .with_write_gate(WriteGate::Channel)
         // The output gate is low-rank here, so it does not ride the fused
         // projection as a full-width segment the way the other families' does.
         .with_has_gate(false)
-        .with_allow_neg_eigval(self.allow_neg_eigval)
+        .with_allow_neg_eigval(self.allow_neg_eigval_resolved())
         .with_use_short_conv(self.use_short_conv)
         .with_conv_kernel(self.conv_kernel)
         .with_conv_bias(self.conv_bias)
@@ -507,14 +611,20 @@ impl GatedDeltaNet2Config {
     pub fn muon_projections(&self) -> Vec<burn_stack::optim::ProjSpec> {
         use burn_stack::optim::{ProjSegment as Seg, ProjSpec};
         let bottleneck = self.bottleneck_resolved();
-        let mut segments = vec![
-            Seg::muon("q", self.key_dim()),
-            Seg::muon("k", self.key_dim()),
-            Seg::muon("v", self.value_dim()),
-            Seg::muon("erase", self.key_dim()),
-            Seg::muon("write", self.value_dim()),
-            Seg::muon("dt_in", bottleneck),
-        ];
+        let mut segments = vec![Seg::muon("q", self.key_dim())];
+        // Each micro-step's maps are listed separately: orthogonalising the `u`
+        // of them jointly would tie factors meant to be independent.
+        for (name, width) in [
+            ("k", self.key_dim()),
+            ("v", self.value_dim()),
+            ("erase", self.key_dim()),
+            ("write", self.value_dim()),
+        ] {
+            for _ in 0..self.n_householder {
+                segments.push(Seg::muon(name, width));
+            }
+        }
+        segments.push(Seg::muon("dt_in", bottleneck));
         let mut specs = vec![];
         if self.use_gate {
             segments.push(Seg::muon("gate_in", bottleneck));
