@@ -114,10 +114,18 @@ so a contiguous range is already a random sample): rows `0..10k` are test,
 `10k..20k` validation, `20k..` training. The defaults pull 4,096 train and 256
 validation stories (~3.4MB of text); `--train-stories` scales that up.
 
-The character stream is cut into non-overlapping windows of `seq_len + 1`; each
-window is one training item, scored at **every** position against its next
-character (so one window contributes `seq_len` classification examples, and the
-reported accuracy is per character).
+The character stream is cut into non-overlapping windows of `seq_len + 1`, each
+scored at **every** position against its next character (so one window
+contributes `seq_len` classification examples, and the reported accuracy is per
+character). One training **item** is a *run* of `run_len` consecutive windows:
+the loop takes one optimizer step per window and carries the (detached) state
+into the next one for as long as the **frontier gate** admits it, discarding the
+rest of the run when a window's loss says the state is not worth passing on.
+`--run-len 1` is the old stateless tiling, every window from a zero state.
+Validation reports both regimes, `[fresh state]` and `[carried state]`. The
+mechanism is `burn_stack::examples::tiny_stories::lm` — see
+`burn-mamba/examples/tiny-stories/README.md`'s "Runs and the frontier" for the
+full account, including that peak memory does not grow with `run_len`.
 
 ## Usage
 
@@ -139,6 +147,9 @@ artifacts' `training_config.json`:
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--seq-len <n>` | 256 | characters per window (the BPTT length) |
+| `--run-len <n>` | 8 | windows per item, i.e. how far the carried state may reach (`1` ⇒ stateless) |
+| `--frontier-tol <f>` | 0.05 | slack of the frontier gate over its opening-window baseline |
+| `--no-frontier` | off | carry the state through the whole run, ungated |
 | `--train-stories <n>` | 4096 | stories pulled from the train split |
 | `--valid-stories <n>` | 256 | stories pulled from the validation split |
 | `--epochs <n>` | 16 | passes over the corpus |
