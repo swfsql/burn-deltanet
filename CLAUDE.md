@@ -185,10 +185,6 @@ same cache — parity on **outputs, final cache, and gradients** is what the tes
 suites assert. Layer containers and networks additionally expose **`prime()`**
 (`step()` without a user token, for class latents).
 
-No family implements `block_step_infinite`: the delta rule's constant-input
-limit is not closed-form (the transition is a data-dependent Householder, not a
-scalar decay).
-
 ### The delta rule, once
 
 `src/delta/` holds the recurrence and its chunkwise WY reformulation **once**;
