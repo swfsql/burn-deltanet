@@ -7,7 +7,7 @@ use burn_deltanet::prelude::{
     DeltaBlockConfig, DeltaNetworkShape, DeltaVocabNetConfig, DeltaVocabShape, GatedDeltaNet1Config,
     GatedMlpConfig, InitPolicy, ResidualsConfig,
 };
-use burn_stack::utils::GradHorizon;
+use burn_stack::utils::{ClassLatent, GradHorizon};
 
 /// Number of layers, each its own weight set.
 ///
@@ -30,11 +30,27 @@ const N_LAYERS: usize = 2;
 /// an undifferentiated layer biases every one of those readouts.
 const GRAD_HORIZON: Option<GradHorizon> = None;
 
+/// Learnable `[CLS]`-style registers (width `d_model`) spliced in front of every
+/// story — the model's "a story starts here", in place of a separator character.
+///
+/// They are what makes seedless generation honest: the last of them is scored
+/// against the story's **first** character during training, so `prime` replays
+/// them and answers with that character's distribution, having been fed nothing.
+/// The alternative — the `"\n\n"` that used to join the stories, fed in as a seed
+/// — is out of distribution, since that sequence only ever occurred *between* two
+/// of them, i.e. always on a state still carrying the previous story.
+///
+/// The gated block has a scalar forget gate that could learn to clear its state
+/// at a boundary instead; the latents make the boundary a thing the model is
+/// *given* rather than one it has to infer, which is the cheaper of the two at
+/// this budget and costs `N_CLASS_LATENTS · d_model` parameters.
+const N_CLASS_LATENTS: usize = 4;
+
 /// The character-level LM: two Gated DeltaNet blocks between a **tied**
 /// 48-character embedding and its transpose, each followed by the SwiGLU MLP the
 /// reference architecture puts there.
 ///
-/// 33,744 parameters — `burn-mamba`'s `tiny-stories` model (39,632 at the same
+/// 33,872 parameters — `burn-mamba`'s `tiny-stories` model (39,760 at the same
 /// `d_model = 32`) to within 15%, so the two are a fair comparison on one
 /// corpus, one tokenizer and one optimizer schedule, with the block as the
 /// variable. The budget is not matched exactly because the block's sizing is
@@ -99,8 +115,9 @@ pub fn model_config() -> DeltaVocabNetConfig {
             DeltaNetworkShape::new(N_LAYERS)
                 .with_n_virtual_layers(None)
                 .with_grad_horizon(GRAD_HORIZON)
-                // No stack-level class latents: every position is a character.
-                .with_class_latents(Vec::new())
+                // Stack-level class latents opening every story — see
+                // [`N_CLASS_LATENTS`]. Every other position is a character.
+                .with_class_latents(vec![ClassLatent::Start; N_CLASS_LATENTS])
                 .with_ignore_first_residual(false)
                 .with_ignore_last_residual(false)
                 // Multi-Gate Residuals: `n_stream` pooled streams between layers

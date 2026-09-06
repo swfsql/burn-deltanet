@@ -9,10 +9,10 @@ a cleaned 2.7M-story subset of [TinyStories](https://arxiv.org/abs/2305.07759)
 The model is deliberately tiny: two Gated DeltaNet blocks (`d_model = 32`,
 `nheads = 3`, `head_k_dim = 8`, `expand_v = 2`), each followed by the SwiGLU MLP
 the reference architecture puts there, joined by Multi-Gate residuals, between a
-tied character embedding and its transpose. **33,744 parameters**, of which the
-embedding is 1,536.
+tied character embedding and its transpose. **33,872 parameters**, of which the
+embedding is 1,536 and the four story-opening class latents 128.
 
-That is `burn-mamba`'s `tiny-stories` model (39,632 parameters) to within 15%,
+That is `burn-mamba`'s `tiny-stories` model (39,760 parameters) to within 15%,
 on purpose: same corpus, same tokenizer, same window, so the block is the
 variable. Everything except the block and its `model.rs` — the corpus, the
 windowing, the epoch loops, the sampler — is one shared copy in
@@ -27,6 +27,12 @@ The remaining headroom under a 40K budget is left **unspent on purpose**. A
 wider MLP, `expand_v = 3`, a fourth head, an 8-wide conv and a third layer were
 each measured, and none of them paid. This model is limited by its optimizer,
 not by its capacity.
+
+Every screening quoted in this file — the ones above and the optimizer notes
+below — was measured on the **previous** corpus layout: one continuous
+`"\n\n"`-joined character stream cut into stateless windows, with no class
+latents. Story-per-item scoring changes what the average is over, so read them as
+a ranking of levers rather than as current numbers.
 
 ## The model
 
@@ -87,45 +93,64 @@ There is no `<unk>`, no `<bos>` and no padding class (`pad_vocab_size_multiple =
 embedding is **tied** (`missing_lm_head = true`): one table answers both "which
 character is this" and "which character comes next".
 
-Stories are joined with `"\n\n"` — a blank line, which never occurs *inside* a
-story (single `\n` separates its paragraphs), so it is an unambiguous document
-boundary, and it is also the prompt used for unconditional sampling.
+A story's start is marked out of band, by four learnable **class latents**, not
+by a character — see [Story boundaries](#story-boundaries).
 
 ## Data
 
-The dataset ships as a single 673MB parquet file, which is absurd for an example
-this size, so instead of the `HuggingfaceDatasetLoader` path (python + the
-`datasets` library + a full sqlite import) the corpus is paged out of the public
-[datasets-server](https://huggingface.co/docs/datasets-server) `/rows` endpoint,
-100 stories per request (its hard maximum). The normalized text is cached in
-`~/.cache/burn-dataset/tinystories-gpt4-clean/<split>-<n>.txt`, so the download
-happens once per `(split, story count)` — and is shared with `burn-mamba`'s copy
-of the example.
-
-The endpoint is rate limited — the measured budget is ~28 requests per two
-minutes, after which CloudFront answers `429` with an HTML body for ~15s at a
-time — so the pager paces itself at one page per 4s and retries a failed one with
-exponential backoff (30s, doubling, 6 attempts). The default corpus is 43
-requests, roughly three minutes; `--train-stories 32768` is 329 requests, closer
-to half an hour. All of it is one-time.
+The dataset is a single 673MB parquet file: one column (`text`), one row per
+story, 2,669 ZSTD row groups of 1,024 rows. It is downloaded **whole**, once, the
+same way `mnist-class` downloads its IDX files, into
+`~/.cache/burn-dataset/tinystories-gpt4-clean/`; only the row groups a request
+touches are decompressed. The stories that come out are normalized and cached
+again as text, one file per `(split, story count)` — so every later run reads a
+few MB of text and never opens the parquet at all. Both caches are shared with
+`burn-mamba`'s copy of the example.
 
 Splits follow the dataset card's suggested row ranges (the rows are pre-shuffled,
 so a contiguous range is already a random sample): rows `0..10k` are test,
 `10k..20k` validation, `20k..` training. The defaults pull 4,096 train and 256
-validation stories (~3.4MB of text); `--train-stories` scales that up.
+validation stories (~3.4MB of text); `--train-stories` scales that up at no extra
+download.
 
-The character stream is cut into non-overlapping windows of `seq_len + 1`, each
-scored at **every** position against its next character (so one window
-contributes `seq_len` classification examples, and the reported accuracy is per
-character). One training **item** is a *run* of `run_len` consecutive windows:
-the loop takes one optimizer step per window and carries the (detached) state
-into the next one for as long as the **frontier gate** admits it, discarding the
-rest of the run when a window's loss says the state is not worth passing on.
-`--run-len 1` is the old stateless tiling, every window from a zero state.
-Validation reports both regimes, `[fresh state]` and `[carried state]`. The
+## Story boundaries
+
+**One item is one story** (303–4,149 characters, median 724), stripped of its
+surrounding whitespace, and nothing is spliced between two of them: a story is a
+self-contained example. What marks its start is four `ClassLatent::Start`
+registers — learnable `d_model`-wide rows the stack prepends to the sequence — and
+the **last of them is scored against the story's first character**. So the model
+is trained to answer "what does a story open with?" from the latents alone.
+
+That is what unconditional sampling then does: `prime()` replays the latents
+against a zero cache, with no input token, and hands back the first character's
+distribution; generation continues from there with plain `step()`s. The
+alternative — the `"\n\n"` that used to join the stories, fed in as a seed — is out
+of distribution, because that sequence only ever occurred *between* two stories,
+i.e. always on a state still carrying the previous one. The gated block's scalar
+forget gate could learn to clear the state at such a boundary instead; the latents
+make the boundary something the model is *given* rather than something it has to
+infer, for 128 parameters.
+
+One `generate()` call is therefore one story. A second story wants a second call
+against a **reset** cache, which is the one place these examples genuinely reset
+one.
+
+Every position is scored against its next character (so the reported accuracy is
+per character), and a story is walked in **windows** of `seq_len`: the loop takes
+one optimizer step per window and carries the (detached) state into the next one
+for as long as the **frontier gate** admits it, discarding the rest of the story
+when a window's loss says the state is not worth passing on. The run's length is
+the story's; `--run-len` only caps it, and `--run-len 1` trains each story's
+opening window and no more. A closed gate is not a *wrong* regime — window 0 is
+the story's own beginning — it just costs reach.
+
+Stories differ in length, so a batch is padded to a whole number of windows of its
+longest one; the batch carries how many positions of each slot are real, and the
+padding is gathered away before the loss, never reaching it or the accuracy. The
 mechanism is `burn_stack::examples::tiny_stories::lm` — see
 `burn-mamba/examples/tiny-stories/README.md`'s "Runs and the frontier" for the
-full account, including that peak memory does not grow with `run_len`.
+full account, including that peak memory does not grow with the run length.
 
 ## Usage
 
@@ -133,7 +158,7 @@ full account, including that peak memory does not grow with `run_len`.
 # debug check in flex (fp32)
 cargo check --example tiny-stories
 
-# train and then sample (downloads ~3.4MB of stories on the first run)
+# train and then sample (downloads the 673MB parquet once, if it is not cached yet)
 cargo run --release --example tiny-stories --features "backend-cuda" -- --training --inference
 
 # a bigger corpus and a longer window
@@ -147,9 +172,9 @@ artifacts' `training_config.json`:
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--seq-len <n>` | 256 | characters per window (the BPTT length) |
-| `--run-len <n>` | 8 | windows per item, i.e. how far the carried state may reach (`1` ⇒ stateless) |
-| `--frontier-tol <f>` | 0.05 | slack of the frontier gate over its opening-window baseline |
-| `--no-frontier` | off | carry the state through the whole run, ungated |
+| `--run-len <n>` | `usize::MAX` | cap on the windows one story may spend (`1` ⇒ openings only) |
+| `--frontier-bits <f>` | 1.6 | the frontier gate's threshold, in bits per character |
+| `--no-frontier` | off | carry the state through the whole story, ungated |
 | `--train-stories <n>` | 4096 | stories pulled from the train split |
 | `--valid-stories <n>` | 256 | stories pulled from the validation split |
 | `--epochs <n>` | 16 | passes over the corpus |
@@ -173,18 +198,21 @@ than every other knob here put together.
 
 ## Sampling
 
-`inference.rs` shows the library's two execution modes back to back: the prompt
-is consumed by one chunkwise `forward()` (prefill, `DeltaPath::Chunk`), and every
-generated character then costs one `step()` against that same cache — O(state)
-per token, with no growing KV cache. Sampling is temperature-scaled multinomial
-over the full 48-way softmax (`temperature <= 0` is greedy), seeded by
-`ChaCha8Rng` so a run is reproducible.
+`inference.rs` shows the library's three execution modes back to back: the class
+latents are replayed by one `prime()` (no input token, and it already answers with
+the first character's distribution), a prompt — when there is one — is consumed by
+one chunkwise `forward()` (prefill, `DeltaPath::Chunk`), and every generated
+character then costs one `step()` against that same cache — O(state) per token,
+with no growing KV cache. Sampling is temperature-scaled multinomial over the full
+48-way softmax (`temperature <= 0` is greedy), seeded by `ChaCha8Rng` so a run is
+reproducible.
 
 `DeltaVocabNet` is the block-generic `VocabNetwork` at `DeltaBlock`, so the
 sampler is `burn_stack`'s own generic one; this example only supplies the path.
 
-`--inference` writes one story per temperature (0.5 / 0.8 / 1.0) plus one
-continuation of a fixed prompt into `<artifacts>/inference/`. Training samples a
+`--inference` writes one story per temperature (0.5 / 0.8 / 1.0), each primed and
+unprompted, plus one continuation of a fixed prompt into
+`<artifacts>/inference/`. Training samples a
 short story at every small validation check into
 `<artifacts>/sample-epoch-{e}-batch-{b}.txt`, so the text can be watched turning
 from noise into words into sentences.

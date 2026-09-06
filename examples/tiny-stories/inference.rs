@@ -8,13 +8,19 @@
 //! generic sampler applies to it directly; all this module adds is the
 //! [`path`](crate::training::path).
 //!
-//! It shows the library's two execution modes back to back: the prompt is
-//! consumed by one chunkwise `forward` (prefill), and every generated character
-//! then costs one `step` against that same cache — O(state) per token, with no
-//! growing KV cache.
+//! It shows the library's three execution modes back to back: the class latents
+//! a story opens with are replayed by one `prime` — no input token, and it
+//! already answers with the first character's distribution — a prompt, when there
+//! is one, is consumed by one chunkwise `forward` (prefill), and every generated
+//! character then costs one `step` against that same cache — O(state) per token,
+//! with no growing KV cache.
+//!
+//! One call is one story. A second one starts from a **zero** cache and primes
+//! again, which is the only place these examples genuinely reset a cache: the
+//! model never saw a story follow another, so continuing into a second one would
+//! be as out-of-distribution as the `"\n\n"` seed the latents replaced.
 
 use crate::AppArgs;
-use crate::dataset::STORY_SEPARATOR;
 use burn::prelude::*;
 use burn_deltanet::prelude::{DeltaVocabNet, DeltaVocabNetConfig};
 
@@ -35,11 +41,12 @@ pub fn infer(model_config: DeltaVocabNetConfig, infer_device: Device, app_args: 
     std::fs::create_dir_all(&out_dir).expect("failed to create the inference directory");
 
     for (i, &temperature) in TEMPERATURES.iter().enumerate() {
-        // The document boundary is the model's "start of story" prompt.
+        // Nothing is fed in: the class latents are the model's "a story starts
+        // here", and `prime` replays them.
         let text = generate(
             &model,
             &infer_device,
-            STORY_SEPARATOR,
+            None,
             SAMPLE_CHARS,
             temperature,
             i as u64,
@@ -53,7 +60,7 @@ pub fn infer(model_config: DeltaVocabNetConfig, infer_device: Device, app_args: 
     let text = generate(
         &model,
         &infer_device,
-        prompt,
+        Some(prompt),
         SAMPLE_CHARS,
         0.8,
         TEMPERATURES.len() as u64,
@@ -65,12 +72,13 @@ pub fn infer(model_config: DeltaVocabNetConfig, infer_device: Device, app_args: 
     println!("\nsaved {} samples to {out_dir:?}", TEMPERATURES.len() + 1);
 }
 
-/// Continue `prompt` with `n_chars` sampled characters, at this example's
-/// [`path`](crate::training::path).
+/// Sample `n_chars` characters of one story at this example's
+/// [`path`](crate::training::path), continuing `prompt` when there is one and
+/// otherwise opening on the model's own class latents (`prime`).
 pub fn generate(
     model: &DeltaVocabNet,
     device: &Device,
-    prompt: &str,
+    prompt: Option<&str>,
     n_chars: usize,
     temperature: f64,
     seed: u64,
