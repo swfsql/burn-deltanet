@@ -1,6 +1,6 @@
 [package]
 name = "burn-deltanet"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 
 [features]
@@ -49,14 +49,18 @@ dev-simd = ["burn/simd", "burn/std", "burn-stack/dev-simd"]
 dev-autotune = ["burn/autotune", "burn-stack/dev-autotune"]
 
 [dependencies]
-burn-stack = { git = "https://github.com/swfsql/burn-stack.git", rev = "b5d519a98cb4a64b82d18a76dbd78f658127ac43", default-features = false }
+burn-stack = { git = "https://github.com/swfsql/burn-stack.git", rev = "fa2a63bbdc19d04ad08d4a0bf0377e189b781ec8", default-features = false }
 serde = { version = "1.0.0", features = ["derive"] }
-burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, optional = true }
+burn-flex = { version = "0.22.0-pre.3", default-features = false, optional = true }
+# burn-flex = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, optional = true }
 
 ### For the main branch. ###
-burn = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, features = ["extension"] }
-burn-cubecl = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, optional = true}
-burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, optional = true}
+burn = { version = "0.22.0-pre.3", default-features = false, features = ["extension"]}
+burn-cubecl = { version = "0.22.0-pre.3", default-features = false, optional = true}
+burn-fusion = { version = "0.22.0-pre.3", default-features = false, optional = true}
+# burn = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, features = ["extension"] }
+# burn-cubecl = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, optional = true}
+# burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, optional = true}
 
 ### For local development. ###
 # burn = { path = "../burn/crates/burn", default-features = false, features = ["extension"] }
@@ -64,7 +68,7 @@ burn-fusion = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1
 # burn-fusion = { path = "../burn/crates/burn-fusion", default-features = false, optional = true }
 
 [dev-dependencies]
-burn-stack = { git = "https://github.com/swfsql/burn-stack.git", rev = "b5d519a98cb4a64b82d18a76dbd78f658127ac43", default-features = false, features = ["test-helpers", "examples-common"] }
+burn-stack = { git = "https://github.com/swfsql/burn-stack.git", rev = "fa2a63bbdc19d04ad08d4a0bf0377e189b781ec8", default-features = false, features = ["test-helpers", "examples-common"] }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 num-traits = "0.2.19"
 rand = "0.9.2"
@@ -75,8 +79,10 @@ temp-dir = "0.1.16"
 image = "0.25.10"
 
 ### For the main branch. ###
-burn = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", default-features = false, features = ["autodiff", "train", "dataset", "std", "optim"]}
-burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "1893b608d1c70d286e4de89f852308d56b3270ea", features = ["network"] }
+burn = { version = "0.22.0-pre.3", default-features = false, features = ["autodiff", "train", "dataset", "std", "optim", "extension"]}
+burn-dataset = { version = "0.22.0-pre.3", features = ["network"] }
+# burn = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", default-features = false, features = ["autodiff", "train", "dataset", "std", "optim"]}
+# burn-dataset = { git = "https://github.com/tracel-ai/burn.git", rev = "13f0a12b71ad83c1f9edeac22dea325dcb612397", features = ["network"] }
 
 # Cargo only autodiscovers `examples/<name>/main.rs`; the `register-*` ladder
 # lives one level deeper, under `examples/register/`, sharing one README.
@@ -91,3 +97,6 @@ path = "examples/register/carousel/main.rs"
 [[bench]]
 name = "layer"
 harness = false
+
+# [patch."https://github.com/swfsql/burn-stack.git"]
+# burn-stack = { path = "../burn-stack" }
