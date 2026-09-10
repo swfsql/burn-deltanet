@@ -217,7 +217,10 @@ takes the gradient analytically. This is the reference kernel's own split —
   `delta_chunk_recalculated(q, k, v, erase, write, g, state, has_gate,
   chunk_len, scale) -> (y_bshv, final_state_bhkv)`; the default body is the
   plain forward on `B`'s primitives, which is what every non-autodiff backend
-  runs. `DeltaChunkAutodiffBackendExt` from `decl_autodiff_backend_ext!`.
+  runs. `DeltaChunkAutodiffBackendExt` from `decl_autodiff_backend_ext!`. The
+  backend list is one `Cube` arm covering every cubecl `backend-*` feature
+  (mirroring burn's `cube_backend` cfg), plus `Flex`/`NdArray`/`LibTorch`/
+  `Remote`/`Autodiff`.
 
 ### `forward.rs`
 The forward in three replayable stages, so the backward can re-run them rather
