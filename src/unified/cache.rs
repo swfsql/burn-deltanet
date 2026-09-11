@@ -84,6 +84,12 @@ macro_rules! impl_block_for_family {
                 let [batch, _d_model] = x.dims();
                 self.zero_caches(batch, n_virtual, &x.device())
             }
+
+            /// No delta-rule block unties a parameter (its layer's pre-norms
+            /// still may).
+            fn untied_params(&self) -> Vec<burn_stack::utils::UntiedParam> {
+                Vec::new()
+            }
         }
 
         impl BlockConfig for $config {
@@ -93,7 +99,8 @@ macro_rules! impl_block_for_family {
                 self.d_model
             }
 
-            fn init_block(&self, device: &Device) -> $block {
+            /// Nothing to tile: a delta-rule block unties no parameter.
+            fn init_block(&self, _n_applications: usize, device: &Device) -> $block {
                 self.init(device)
             }
 

@@ -145,6 +145,11 @@ impl Block for DeltaBlock {
         let [batch, _d_model] = x.dims();
         self.zero_caches(batch, n_virtual, &x.device())
     }
+
+    /// No delta-rule block unties a parameter (its layer's pre-norms still may).
+    fn untied_params(&self) -> Vec<burn_stack::utils::UntiedParam> {
+        Vec::new()
+    }
 }
 
 /// Config for [`DeltaBlock`]: pick the family here, and the enum picks the
@@ -204,7 +209,8 @@ impl BlockConfig for DeltaBlockConfig {
         self.d_model()
     }
 
-    fn init_block(&self, device: &Device) -> DeltaBlock {
+    /// Nothing to tile: a delta-rule block unties no parameter.
+    fn init_block(&self, _n_applications: usize, device: &Device) -> DeltaBlock {
         self.init(device)
     }
 

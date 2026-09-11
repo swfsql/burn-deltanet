@@ -327,7 +327,9 @@ see. Declares the submodules and re-exports.
   `cache_to_inner`/`cache_from_inner` are spelled out field by field:
   `Module::map` is a no-op on the bare `Tensor`s a cache holds.
 - `impl_block_for_family!` — one macro emitting `Block` + `BlockConfig` for all
-  four families; the bodies are the same text four times over.
+  four families; the bodies are the same text four times over. No family unties
+  a parameter (nor `DeltaBlock`): `untied_params` is empty, `init_block` ignores
+  the application count.
 
 ### `block.rs`
 - `DeltaBlock` (a `Module` enum over the four family blocks) + `impl Block`;
