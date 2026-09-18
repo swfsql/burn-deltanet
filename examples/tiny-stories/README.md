@@ -167,7 +167,8 @@ cargo run --release --example tiny-stories --features "backend-cuda" -- --traini
 ```
 
 Downstream flags, all forwarded after the trailing `--` and persisted into the
-artifacts' `training_config.json`:
+artifacts' `training_config.json` (the number of epochs is the shared CLI's
+`--epochs`, before the `--`):
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -177,7 +178,6 @@ artifacts' `training_config.json`:
 | `--no-frontier` | off | carry the state through the whole story, ungated |
 | `--train-stories <n>` | 4096 | stories pulled from the train split |
 | `--valid-stories <n>` | 256 | stories pulled from the validation split |
-| `--epochs <n>` | 16 | passes over the corpus |
 | `--batch-size <n>` | 16 | windows per optimizer step |
 | `--no-muon` | off | keep the hidden weight matrices on AdamW instead of [Muon](https://kellerjordan.github.io/posts/muon/) (see `mnist-class`'s README) |
 

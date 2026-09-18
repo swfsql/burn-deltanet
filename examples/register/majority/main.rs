@@ -70,7 +70,7 @@ pub fn launch(app_args: &AppArgs) {
     let dtype = burn::tensor::Tensor::<1>::zeros([1], &device).dtype();
 
     let (batch_size, num_epochs) = (64, 30);
-    let training_config = app_args.load_training_config().unwrap_or_else(|| {
+    let mut training_config = app_args.load_training_config().unwrap_or_else(|| {
         println!("Initializing new training config");
         // The write-enable `β` has to saturate (a partial erase blends the old
         // value into the new one), which needs a large step to reach and a small
@@ -89,6 +89,7 @@ pub fn launch(app_args: &AppArgs) {
                 .with_warmup_steps(100),
         ))
     });
+    app_args.override_training_config(&mut training_config);
     let model_config = app_args.load_model_config().unwrap_or_else(|| {
         println!("Initializing new model config");
         model::model_config()

@@ -28,7 +28,8 @@ assumption, or a doc reference. If it needs one, it belongs here.
 
 ```bash
 cargo check                 # type-check the lib surface
-cargo test --lib --examples  -- --test-threads=1 # run tests (any backend; flex = CPU default)
+cargo test --lib -- --test-threads=1 # run lib tests (any backend; flex = CPU default)
+cargo test --examples -j 1 -- --test-threads=1 # run example tests (any backend; flex = CPU default)
 cargo test --doc            # the crate header's quick-start example
 cargo doc --no-deps         # build docs — must be warning-free
 cargo run --release --example register-majority

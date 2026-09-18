@@ -51,7 +51,11 @@ cargo run --example register-majority --features "backend-flex" -- --inference -
 # (checkpoints and the end-of-epoch validation still happen before it stops)
 cargo run --example register-majority --features "backend-flex" -- --training --max-batches 600
 
-# assume /some/path/ contains a different training config file, e.g. with a different seed:
+# continue it for another 600: the LR schedule, the epoch and the position in it pick up
+# where the checkpoint left them (the rest of that epoch drawn from a fresh shuffle)
+cargo run --example register-majority --features "backend-flex" -- --training --artifacts-path "$ARTIFACTS" --max-batches 600 --resume
+
+# assume /some/path/ contains a different training config file, e.g. with a different LR schedule:
 TCONFIG="/some/path/training_config.json"
 
 # continue training from another training config
@@ -63,4 +67,4 @@ Downstream flags go after a trailing `--`; `register-carousel` takes `--turn rot
 
 ##### CLI Help Message
 
-Run any example with `-h` for the full flag list: it covers `--training` / `--inference`, the artifacts directory, the training/model config overrides, `--remove-artifacts`, and `--max-batches` (a run-length cap in mini-batches, counted across epochs).
+Run any example with `-h` for the full flag list: it covers `--training` / `--inference`, the artifacts directory, the training/model config overrides (`--seed`, `--epochs`, `--max-lr`), `--remove-artifacts`, `--max-batches` (a run-length cap in mini-batches, counted across epochs), `--resume` (continue the schedule step, epoch and batch the checkpoint saved), and the checkpoint/validation cadence (`--checkpoint-every`, `--valid-every`, `--valid-batches`). Every training step and validation is also appended to the artifacts directory's `metrics.jsonl`.

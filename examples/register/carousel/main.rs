@@ -85,7 +85,7 @@ pub fn launch(app_args: &AppArgs) {
     let dtype = burn::tensor::Tensor::<1>::zeros([1], &device).dtype();
 
     let (batch_size, num_epochs) = (64, 150);
-    let training_config = app_args.load_training_config().unwrap_or_else(|| {
+    let mut training_config = app_args.load_training_config().unwrap_or_else(|| {
         println!("Initializing new training config");
         // Every factor has to settle on an exact reflection (`β = 2`, `k` on a
         // swap axis); a partial one leaks a little of each register into the
@@ -110,6 +110,7 @@ pub fn launch(app_args: &AppArgs) {
                 .with_warmup_steps(100),
         ))
     });
+    app_args.override_training_config(&mut training_config);
     let model_config = app_args.load_model_config().unwrap_or_else(|| {
         println!("Initializing new model config (turn {turn:?}, {factors} factor(s))");
         model::model_config(turn, factors)
